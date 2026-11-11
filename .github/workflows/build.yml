@@ -17,7 +17,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Dependências
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+        # X11/Wayland são carregados dinamicamente na execução; os cabeçalhos são opcionais.
+        # Tolerante a espelhos do Ubuntu fora do ar.
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update || true
+          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            || echo "::warning::Pacotes de desenvolvimento não instalados; seguindo sem eles"
       - run: cargo test -p discolab-core
       - run: cargo build --release -p discolab -p discolab-cli
       - name: Pacote RPM
