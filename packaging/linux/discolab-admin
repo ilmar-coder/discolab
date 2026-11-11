@@ -1,0 +1,7 @@
+#!/bin/sh
+# Abre o DiscoLab como root (necessário para SMART e varredura de superfície no Linux),
+# repassando a sessão gráfica (X11 ou Wayland) do usuário.
+exec pkexec env \
+  DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  WAYLAND_DISPLAY="$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+  /usr/bin/discolab "$@"

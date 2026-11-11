@@ -30,6 +30,20 @@ HD Sentinel e CrystalDiskMark, com foco em resultados **honestos**.
 - O status "SMART PASSED" do firmware **não basta**: setores pendentes/incorrigíveis reduzem a nota mesmo assim.
 - Valores brutos "empacotados" da Seagate (IDs 1 e 7) não geram alarme falso.
 
+## Downloads
+
+Cada versão (tag `v*`) publica na página **Releases** do GitHub:
+
+| Sistema | Arquivo | Como usar |
+|---|---|---|
+| Windows | `DiscoLab-windows-x64.zip` | Extraia e abra `discolab.exe` (botão direito → Executar como administrador para SMART completo) |
+| Fedora / RHEL / openSUSE | `discolab-*.x86_64.rpm` | `sudo dnf install ./discolab-*.rpm` — menu "DiscoLab" com a ação "Abrir como administrador" |
+| Outras distros Linux | `discolab-linux-x86_64.tar.gz` | Extraia e rode `./discolab` |
+| macOS (Apple Silicon) | `DiscoLab-macos-arm64.zip` | Já inclui o `smartctl` |
+| Android | `DiscoLab-android-ci.apk` | Instale permitindo "fontes desconhecidas" |
+
+Para gerar o RPM localmente (no Linux): `cargo install cargo-generate-rpm && cargo build --release && cargo generate-rpm -p crates/app`.
+
 ## Requisitos
 
 O SMART completo usa o **smartmontools** (`smartctl`), a implementação de passthrough ATA/SCSI/NVMe mais

@@ -2,32 +2,72 @@ name: build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Dependências Linux
-        if: runner.os == 'Linux'
+      - name: Dependências
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
       - run: cargo test -p discolab-core
       - run: cargo build --release -p discolab -p discolab-cli
+      - name: Pacote RPM
+        run: |
+          cargo install cargo-generate-rpm --locked
+          strip target/release/discolab target/release/discolab-cli
+          cargo generate-rpm -p crates/app -o dist/
+          ls -la dist
+      - name: Tarball
+        run: |
+          mkdir -p pkg/discolab && cp target/release/discolab target/release/discolab-cli packaging/linux/* README.md pkg/discolab/
+          tar -C pkg -czf dist/discolab-linux-x86_64.tar.gz discolab
       - uses: actions/upload-artifact@v4
         with:
-          name: discolab-${{ runner.os }}
-          path: |
-            target/release/discolab
-            target/release/discolab-cli
-            target/release/discolab.exe
-            target/release/discolab-cli.exe
+          name: discolab-linux
+          path: dist/*
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p discolab-core
+      - run: cargo build --release -p discolab -p discolab-cli
+      - name: Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg/DiscoLab, dist | Out-Null
+          Copy-Item target/release/discolab.exe, target/release/discolab-cli.exe, README.md pkg/DiscoLab/
+          Compress-Archive -Path pkg/DiscoLab -DestinationPath dist/DiscoLab-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discolab-windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p discolab-core
+      - name: App
+        run: |
+          brew install smartmontools
+          ./scripts/package-macos.sh
+          mkdir -p dist && ditto -c -k --keepParent target/DiscoLab.app dist/DiscoLab-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discolab-macos
+          path: dist/*
 
   android:
     runs-on: ubuntu-latest
@@ -52,7 +92,29 @@ jobs:
             -validity 365 -storepass "$PASS" -keypass "$PASS" -dname "CN=DiscoLab CI"
           export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/ci.keystore" CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$PASS"
           cargo apk build -p discolab --lib --release
+          mkdir -p dist && cp target/release/apk/DiscoLab.apk dist/DiscoLab-android-ci.apk
       - uses: actions/upload-artifact@v4
         with:
           name: discolab-android
-          path: target/release/apk/*.apk
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            **Downloads**
+            - **Windows:** `DiscoLab-windows-x64.zip` — extraia e execute `discolab.exe` (botão direito → *Executar como administrador* para SMART completo). Instale o [smartmontools](https://www.smartmontools.org/) para o SMART completo.
+            - **Linux (Fedora/openSUSE/RHEL):** `sudo dnf install ./discolab-*.x86_64.rpm` — no menu aparece "DiscoLab" e a ação "Abrir como administrador".
+            - **Linux (outras):** `discolab-linux-x86_64.tar.gz`.
+            - **macOS (Apple Silicon):** `DiscoLab-macos-arm64.zip` (com smartctl embutido).
+            - **Android:** `DiscoLab-android-ci.apk` (assinado com chave de CI; para atualizar por cima, use sempre a mesma origem do APK).

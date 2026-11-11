@@ -55,3 +55,22 @@ required = true
 [[package.metadata.android.uses_feature]]
 name = "android.hardware.usb.host"
 required = false
+
+# ---- Pacote RPM (cargo generate-rpm -p crates/app) ----
+[package.metadata.generate-rpm]
+name = "discolab"
+summary = "Teste de saúde (SMART), benchmark e superfície para HDD, SSD e NVMe"
+license = "Proprietary"
+url = "https://github.com/ilmar-coder/discolab"
+assets = [
+  { source = "target/release/discolab", dest = "/usr/bin/discolab", mode = "755" },
+  { source = "target/release/discolab-cli", dest = "/usr/bin/discolab-cli", mode = "755" },
+  { source = "packaging/linux/discolab-admin", dest = "/usr/bin/discolab-admin", mode = "755" },
+  { source = "packaging/linux/discolab.desktop", dest = "/usr/share/applications/discolab.desktop", mode = "644" },
+  { source = "packaging/linux/discolab.svg", dest = "/usr/share/icons/hicolor/scalable/apps/discolab.svg", mode = "644" },
+  { source = "README.md", dest = "/usr/share/doc/discolab/README.md", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.recommends]
+smartmontools = "*"
+polkit = "*"

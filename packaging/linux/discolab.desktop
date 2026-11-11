@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=DiscoLab
+GenericName=Teste de discos
+Comment=Saúde (SMART), benchmark e varredura de superfície para HDD, SSD e NVMe
+Exec=discolab
+Icon=discolab
+Terminal=false
+Categories=System;Utility;Monitor;
+Keywords=disk;ssd;hdd;nvme;smart;benchmark;disco;saude;
+Actions=admin;
+
+[Desktop Action admin]
+Name=Abrir como administrador (SMART completo e superfície)
+Exec=discolab-admin
