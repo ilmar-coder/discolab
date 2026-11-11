@@ -195,8 +195,8 @@ fn find<'a>(env: &mut JNIEnv<'a>, mgr: &JObject, name: &str) -> JRes<Option<JObj
     Ok(None)
 }
 
-/// Margens das barras do sistema (status, navegação, recorte) em pixels: [esq, topo, dir, base].
-pub fn system_insets_px() -> Option<[i32; 4]> {
+/// Margens das barras do sistema em pixels: [esq, topo, dir, base], via WindowInsets.
+pub fn system_insets_px() -> Result<[i32; 4], String> {
     with_env(|env, act| {
         let win = env.call_method(act, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
         let decor = env.call_method(&win, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
@@ -210,6 +210,27 @@ pub fn system_insets_px() -> Option<[i32; 4]> {
         }
         Ok(Some(v))
     })
-    .ok()
-    .flatten()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "WindowInsets nulo".to_string())
+}
+
+/// Alturas da barra de status e de navegação pelos recursos do sistema (pixels).
+pub fn bar_heights_px() -> Result<(i32, i32), String> {
+    with_env(|env, _| {
+        let res = env.call_static_method("android/content/res/Resources", "getSystem", "()Landroid/content/res/Resources;", &[])?.l()?;
+        let mut out = [0i32; 2];
+        for (i, name) in ["status_bar_height", "navigation_bar_height"].iter().enumerate() {
+            let n = env.new_string(*name)?;
+            let ty = env.new_string("dimen")?;
+            let pkg = env.new_string("android")?;
+            let id = env
+                .call_method(&res, "getIdentifier", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I", &[JValue::Object(&n), JValue::Object(&ty), JValue::Object(&pkg)])?
+                .i()?;
+            if id != 0 {
+                out[i] = env.call_method(&res, "getDimensionPixelSize", "(I)I", &[JValue::Int(id)])?.i()?;
+            }
+        }
+        Ok((out[0], out[1]))
+    })
+    .map_err(|e| e.to_string())
 }

@@ -127,6 +127,7 @@ pub struct App {
     insets: [f32; 4],
     #[allow(dead_code)]
     insets_at: Option<std::time::Instant>,
+    insets_diag: String,
 }
 
 impl App {
@@ -188,6 +189,7 @@ impl App {
             mobile: None,
             insets: [0.0; 4],
             insets_at: None,
+            insets_diag: String::new(),
         };
         app.refresh_devices();
         app
@@ -384,10 +386,17 @@ impl App {
             let due = self.insets_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_millis(1000));
             if due {
                 self.insets_at = Some(std::time::Instant::now());
-                if let Some(px) = discolab_core::usb::android::system_insets_px() {
-                    let ppp = ctx.pixels_per_point().max(0.1);
-                    self.insets = px.map(|v| v as f32 / ppp);
+                let ppp = ctx.pixels_per_point().max(0.1);
+                let (px, diag) = android_insets_px();
+                // Mínimos seguros em dp: o app nunca fica embaixo das barras do sistema,
+                // mesmo que o aparelho não informe as margens.
+                let min = [0.0, 30.0, 0.0, 34.0];
+                let mut v = [0.0f32; 4];
+                for i in 0..4 {
+                    v[i] = (px[i] as f32 / ppp).max(min[i]);
                 }
+                self.insets = v;
+                self.insets_diag = format!("{diag} · ppp {ppp:.2} · usado {:.0}/{:.0}/{:.0}/{:.0} dp", v[0], v[1], v[2], v[3]);
                 ctx.request_repaint_after(std::time::Duration::from_millis(1100));
             }
         }
@@ -1328,6 +1337,10 @@ impl App {
             if self.status.starts_with("Relatório") || self.status.starts_with("Erro") {
                 ui.label(RichText::new(&self.status).small().color(ACCENT));
             }
+            if !self.insets_diag.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("Tela: {}", self.insets_diag)).small().color(MUTED));
+            }
         });
         if let Some(s) = status {
             self.status = s;
@@ -1441,8 +1454,55 @@ pub fn run(options: eframe::NativeOptions) -> eframe::Result {
 }
 
 #[cfg(target_os = "android")]
+static ANDROID_APP: OnceLock<winit::platform::android::activity::AndroidApp> = OnceLock::new();
+
+/// Margens das barras do sistema (px), combinando três fontes, e o texto de diagnóstico.
+#[cfg(target_os = "android")]
+fn android_insets_px() -> ([i32; 4], String) {
+    let mut v = [0i32; 4];
+    let mut diag = Vec::new();
+    // 1) área de conteúdo informada pela NativeActivity
+    if let Some(app) = ANDROID_APP.get() {
+        let r = app.content_rect();
+        if let Some(w) = app.native_window() {
+            let (ww, wh) = (w.width(), w.height());
+            if r.right > r.left && r.bottom > r.top {
+                let c = [r.left, r.top, (ww - r.right).max(0), (wh - r.bottom).max(0)];
+                for i in 0..4 {
+                    v[i] = v[i].max(c[i]);
+                }
+            }
+            diag.push(format!("rect {},{},{},{} janela {ww}x{wh}", r.left, r.top, r.right, r.bottom));
+        } else {
+            diag.push("sem janela".into());
+        }
+    }
+    // 2) WindowInsets
+    match discolab_core::usb::android::system_insets_px() {
+        Ok(c) => {
+            for i in 0..4 {
+                v[i] = v[i].max(c[i]);
+            }
+            diag.push(format!("insets {:?}", c));
+        }
+        Err(e) => diag.push(format!("insets erro: {e}")),
+    }
+    // 3) alturas das barras pelos recursos do sistema
+    match discolab_core::usb::android::bar_heights_px() {
+        Ok((top, bottom)) => {
+            v[1] = v[1].max(top);
+            v[3] = v[3].max(bottom);
+            diag.push(format!("barras {top}/{bottom}"));
+        }
+        Err(e) => diag.push(format!("barras erro: {e}")),
+    }
+    (v, diag.join(" · "))
+}
+
+#[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    let _ = ANDROID_APP.set(app.clone());
     if let Some(p) = app.internal_data_path() {
         let _ = BENCH_DIR.set(p.join("bench"));
         let _ = discolab_core::report::REPORT_DIR.set(p.join("relatorios"));
