@@ -99,6 +99,11 @@ pub fn list_volumes() -> Vec<Volume> {
                 && !m.starts_with("/boot/efi")
         })
         .collect();
+    #[cfg(target_os = "android")]
+    v.retain(|x| {
+        let m = x.mount.to_string_lossy();
+        (m == "/data" || m.starts_with("/storage/") || m.starts_with("/mnt/media_rw/")) && !m.starts_with("/storage/self")
+    });
     v.sort_by(|a, b| a.mount.cmp(&b.mount));
     v.dedup_by(|a, b| a.mount == b.mount);
     v

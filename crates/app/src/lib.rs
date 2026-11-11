@@ -1,10 +1,12 @@
 //! DiscoLab — interface gráfica (desktop e Android) sobre o `discolab-core`.
 
+mod ui_kit;
+
 use discolab_core::bench::{BenchConfig, BenchEvent, BenchReport, TestResult, TestSpec, default_tests, run_bench};
 use discolab_core::device::{Device, DriveKind, Volume, list_devices, list_volumes};
 use discolab_core::health::{Assessment, Severity, assess};
 use discolab_core::report::{save_report, text_report};
-use discolab_core::smart::{SelfTest, SmartReport, read_smart, start_self_test};
+use discolab_core::smart::{SelfTest, SmartReport, SmartSource, read_smart, start_self_test};
 use discolab_core::surface::{BUCKET_LABELS, MAP_CELLS, ScanConfig, ScanEvent, ScanSummary, run_scan};
 use discolab_core::util::human_bytes;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
@@ -13,6 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
+use ui_kit::*;
 
 /// Pasta padrão de benchmark (definida pelo Android para o armazenamento do app).
 pub static BENCH_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -32,6 +35,28 @@ enum Tab {
     Bench,
     Surface,
     Report,
+}
+
+impl Tab {
+    const ALL: [Tab; 5] = [Tab::Health, Tab::Smart, Tab::Bench, Tab::Surface, Tab::Report];
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Health => "Saúde",
+            Tab::Smart => "SMART",
+            Tab::Bench => "Benchmark",
+            Tab::Surface => "Superfície",
+            Tab::Report => "Relatório",
+        }
+    }
+    fn icon(self) -> Icon {
+        match self {
+            Tab::Health => Icon::Heart,
+            Tab::Smart => Icon::List,
+            Tab::Bench => Icon::Speed,
+            Tab::Surface => Icon::Grid,
+            Tab::Report => Icon::Doc,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -95,93 +120,19 @@ pub struct App {
     scan: ScanUi,
     status: String,
     selftest_msg: Option<String>,
-}
-
-// ------------------------------------------------------------------ cores
-
-const GREEN: Color32 = Color32::from_rgb(46, 204, 113);
-const YELLOW: Color32 = Color32::from_rgb(241, 196, 15);
-const ORANGE: Color32 = Color32::from_rgb(243, 156, 18);
-const RED: Color32 = Color32::from_rgb(231, 76, 60);
-const BLUE: Color32 = Color32::from_rgb(52, 152, 219);
-const DIM: Color32 = Color32::from_rgb(140, 140, 150);
-
-fn sev_color(s: Severity) -> Color32 {
-    match s {
-        Severity::Critical => RED,
-        Severity::Warning => ORANGE,
-        Severity::Notice => YELLOW,
-        Severity::Ok => GREEN,
-        Severity::Info => DIM,
-    }
-}
-
-fn health_color(a: &Assessment) -> Color32 {
-    match a.status {
-        Severity::Critical => RED,
-        Severity::Warning => ORANGE,
-        _ if a.health >= 90 => GREEN,
-        _ => YELLOW,
-    }
-}
-
-fn bucket_color(b: u8) -> Color32 {
-    match b {
-        0 => Color32::from_rgb(85, 90, 100),
-        1 => Color32::from_rgb(125, 130, 140),
-        2 => Color32::from_rgb(175, 180, 190),
-        3 => Color32::from_rgb(46, 204, 113),
-        4 => ORANGE,
-        5 => RED,
-        6 => BLUE,
-        _ => Color32::from_rgb(38, 40, 46),
-    }
-}
-
-/// Explicação curta de cada atributo SMART ATA (e se é crítico para a saúde).
-fn attr_info(id: u32) -> (&'static str, bool) {
-    match id {
-        1 => ("Taxa de erros de leitura (Seagate: valor bruto empacotado, ignore)", false),
-        3 => ("Tempo para o motor atingir rotação", false),
-        4 => ("Ciclos de partida/parada", false),
-        5 => ("Setores realocados — degradação real da mídia", true),
-        7 => ("Erros de posicionamento (Seagate: valor bruto empacotado)", false),
-        9 => ("Horas ligado", false),
-        10 => ("Repetições de partida do motor — problema mecânico", true),
-        12 => ("Ciclos de energia", false),
-        170 | 180 => ("Blocos reserva disponíveis", false),
-        171 | 172 | 181 | 182 => ("Falhas de programação/apagamento da flash", true),
-        173 | 177 => ("Contador de nivelamento de desgaste", false),
-        174 | 192 => ("Desligamentos inesperados", false),
-        183 => ("Downshift de interface SATA", false),
-        184 => ("Erros fim-a-fim (cache/DRAM do disco)", true),
-        187 => ("Erros incorrigíveis reportados", true),
-        188 => ("Timeouts de comando (cabo/fonte)", false),
-        190 | 194 => ("Temperatura", false),
-        191 => ("Choques/vibração detectados", false),
-        193 => ("Ciclos de estacionamento das cabeças", false),
-        195 => ("Correções ECC por hardware", false),
-        196 => ("Eventos de realocação", false),
-        197 => ("Setores pendentes — instáveis agora", true),
-        198 => ("Incorrigíveis offline", true),
-        199 => ("Erros CRC de interface — cabo/porta, não o disco", false),
-        200 => ("Erros de escrita multi-zona", false),
-        202 | 231 | 233 | 169 => ("Vida útil / desgaste (normalizado = % restante)", false),
-        232 => ("Espaço reserva disponível", false),
-        241 => ("Total escrito pelo host", false),
-        242 => ("Total lido pelo host", false),
-        _ => ("", false),
-    }
+    picker_open: bool,
+    scanning_devices: bool,
+    mobile: Option<bool>,
+    /// Margens das barras do sistema (pontos): esquerda, topo, direita, base.
+    insets: [f32; 4],
+    #[allow(dead_code)]
+    insets_at: Option<std::time::Instant>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
-        ctx.set_visuals(egui::Visuals::dark());
-        ctx.global_style_mut(|s| {
-            s.spacing.item_spacing = Vec2::new(8.0, 6.0);
-            s.spacing.button_padding = Vec2::new(10.0, 5.0);
-        });
+        apply_theme(&ctx, false);
         let (tx, rx) = mpsc::channel();
         let mut app = App {
             ctx,
@@ -232,6 +183,11 @@ impl App {
             },
             status: "Procurando discos…".into(),
             selftest_msg: None,
+            picker_open: false,
+            scanning_devices: false,
+            mobile: None,
+            insets: [0.0; 4],
+            insets_at: None,
         };
         app.refresh_devices();
         app
@@ -248,6 +204,7 @@ impl App {
 
     fn refresh_devices(&mut self) {
         self.status = "Procurando discos…".into();
+        self.scanning_devices = true;
         let ctx = self.ctx.clone();
         self.spawn(move |tx| {
             let devs = list_devices();
@@ -286,13 +243,24 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Devices(d, v) => {
-                    self.status = format!("{} disco(s), {} volume(s)", d.len(), v.len());
+                    self.scanning_devices = false;
+                    self.status = format!("{} disco(s) · {} volume(s)", d.len(), v.len());
+                    let prev = self.devices.get(self.sel).map(|x| x.name.clone());
                     for x in &d {
-                        self.data.entry(x.name.clone()).or_default().loading = !x.smart_path.is_empty();
+                        let e = self.data.entry(x.name.clone()).or_default();
+                        e.loading = !x.smart_path.is_empty() && e.smart.is_none();
                     }
                     self.devices = d;
                     self.volumes = v;
-                    self.sel = self.sel.min(self.devices.len().saturating_sub(1));
+                    // Mantém a seleção; um disco USB recém-conectado ganha o foco.
+                    self.sel = prev.and_then(|p| self.devices.iter().position(|x| x.name == p)).unwrap_or(0);
+                    if let Some(i) = self
+                        .devices
+                        .iter()
+                        .position(|x| x.kind == DriveKind::Usb && !self.data.get(&x.name).is_some_and(|e| e.smart.is_some()))
+                    {
+                        self.sel = i;
+                    }
                     if self.bench.vol >= self.volumes.len() {
                         self.bench.vol = 0;
                     }
@@ -365,7 +333,12 @@ impl App {
         match e {
             ScanEvent::Started { total_blocks, uncached, size } => {
                 s.total = total_blocks;
-                s.log.push(format!("Iniciado: {} · {} blocos · sem cache: {}", human_bytes(size), total_blocks, if uncached { "sim" } else { "não" }));
+                s.log.push(format!(
+                    "Iniciado: {} · {} blocos · sem cache: {}",
+                    human_bytes(size),
+                    total_blocks,
+                    if uncached { "sim" } else { "não" }
+                ));
             }
             ScanEvent::Progress { done_blocks, mbps, position_pct, buckets } => {
                 s.done = done_blocks;
@@ -401,50 +374,91 @@ impl App {
         self.devices.get(self.sel)
     }
 
-    // ------------------------------------------------------------ UI
+    fn is_mobile(&self) -> bool {
+        self.mobile.unwrap_or(false)
+    }
 
-    fn device_list(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("Discos");
-            if ui.small_button("Atualizar").on_hover_text("Atualizar lista").clicked() {
-                self.refresh_devices();
+    fn update_insets(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "android")]
+        {
+            let due = self.insets_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_millis(1000));
+            if due {
+                self.insets_at = Some(std::time::Instant::now());
+                if let Some(px) = discolab_core::usb::android::system_insets_px() {
+                    let ppp = ctx.pixels_per_point().max(0.1);
+                    self.insets = px.map(|v| v as f32 / ppp);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(1100));
             }
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = ctx;
+    }
+
+    // ------------------------------------------------------------ cabeçalho / navegação
+
+    fn device_card(&self, ui: &mut egui::Ui, d: &Device, selected: bool, compact: bool) -> egui::Response {
+        let dd = self.data.get(&d.name);
+        let health = dd.and_then(|x| x.health.as_ref());
+        let loading = dd.map(|x| x.loading).unwrap_or(false);
+        let accent = health.map(health_color).unwrap_or(ACCENT);
+        let fill = if selected { ACCENT.gamma_multiply(0.14) } else { CARD };
+        let stroke = if selected { Stroke::new(1.5, ACCENT) } else { Stroke::new(1.0, BORDER) };
+        let r = egui::Frame::new()
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(14)
+            .inner_margin(egui::Margin::symmetric(12, if compact { 8 } else { 10 }))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, 10, accent.gamma_multiply(0.18));
+                    paint_icon(ui.painter(), r.shrink(9.0), drive_icon(d.kind), accent);
+                    let right_w = 58.0;
+                    ui.vertical(|ui| {
+                        ui.set_width((ui.available_width() - right_w).max(60.0));
+                        ui.add(egui::Label::new(RichText::new(&d.model).strong().color(TEXT)).truncate());
+                        let size = if d.size_bytes > 0 { human_bytes(d.size_bytes) } else { "—".into() };
+                        ui.label(RichText::new(format!("{} · {}", d.kind.label(), size)).small().color(MUTED));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(h) = health {
+                            ui.label(RichText::new(format!("{}%", h.health)).size(19.0).strong().color(health_color(h)));
+                        } else if loading {
+                            ui.spinner();
+                        }
+                    });
+                });
+            })
+            .response;
+        r.interact(egui::Sense::click())
+    }
+
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.horizontal(brand);
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("DISCOS").small().strong().color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_button(ui, Icon::Refresh, "Atualizar lista de discos", self.scanning_devices).clicked() {
+                    self.refresh_devices();
+                }
+            });
         });
-        ui.separator();
+        ui.add_space(4.0);
         let mut clicked = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, d) in self.devices.iter().enumerate() {
-                let dd = self.data.get(&d.name);
-                let frame = egui::Frame::group(ui.style()).fill(if i == self.sel {
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-                } else {
-                    ui.visuals().faint_bg_color
-                });
-                let r = frame
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new(&d.model).strong());
-                        ui.label(RichText::new(format!("{} · {} · {}", d.kind.label(), human_bytes(d.size_bytes), d.name)).small().color(DIM));
-                        match dd.and_then(|x| x.health.as_ref()) {
-                            Some(h) => {
-                                ui.label(RichText::new(format!("Saúde {}% · {}", h.health, h.status_label())).color(health_color(h)).strong());
-                            }
-                            None if dd.map(|x| x.loading).unwrap_or(false) => {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label(RichText::new("lendo SMART…").small());
-                                });
-                            }
-                            None => {
-                                ui.label(RichText::new("sem dados de saúde").small().color(DIM));
-                            }
-                        }
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                if r.clicked() {
+            let devs = self.devices.clone();
+            for (i, d) in devs.iter().enumerate() {
+                if self.device_card(ui, d, i == self.sel, false).clicked() {
                     clicked = Some(i);
                 }
+                ui.add_space(6.0);
+            }
+            if devs.is_empty() && !self.scanning_devices {
+                ui.label(RichText::new("Nenhum disco encontrado.").color(MUTED));
             }
         });
         if let Some(i) = clicked {
@@ -452,263 +466,411 @@ impl App {
         }
     }
 
-    fn tabs(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            for (t, l) in [
-                (Tab::Health, "Saúde"),
-                (Tab::Smart, "SMART"),
-                (Tab::Bench, "Benchmark"),
-                (Tab::Surface, "Superfície"),
-                (Tab::Report, "Relatório"),
-            ] {
-                ui.selectable_value(&mut self.tab, t, RichText::new(l).size(15.0));
+    fn mobile_header(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            brand(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_button(ui, Icon::Refresh, "Atualizar lista de discos", self.scanning_devices).clicked() {
+                    self.refresh_devices();
+                }
+            });
+        });
+        ui.add_space(8.0);
+        if let Some(d) = self.current().cloned() {
+            let n = self.devices.len();
+            let r = self.device_card(ui, &d, false, true).on_hover_text("Trocar disco");
+            let hint = if n > 1 { format!("{n} discos · trocar") } else { "trocar disco".into() };
+            ui.painter().text(
+                egui::pos2(r.rect.right() - 12.0, r.rect.bottom() - 6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                hint,
+                egui::FontId::proportional(11.0),
+                ACCENT,
+            );
+            if r.clicked() {
+                self.picker_open = true;
+            }
+        } else {
+            ui.horizontal(|ui| {
+                if self.scanning_devices {
+                    ui.spinner();
+                }
+                ui.label(RichText::new("Procurando discos…").color(MUTED));
+            });
+        }
+        ui.add_space(8.0);
+    }
+
+    fn device_picker(&mut self, ctx: &egui::Context) {
+        if !self.picker_open {
+            return;
+        }
+        let mut chosen = None;
+        let mut refresh = false;
+        let mut close = false;
+        let w = (ctx.content_rect().width() - 48.0).clamp(240.0, 480.0);
+        let resp = egui::Modal::new(egui::Id::unique("picker")).show(ctx, |ui| {
+            ui.set_width(w);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Escolher disco").size(19.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(ui, Icon::Refresh, "Atualizar lista de discos", self.scanning_devices).clicked() {
+                        refresh = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            let devs = self.devices.clone();
+            egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.6).show(ui, |ui| {
+                for (i, d) in devs.iter().enumerate() {
+                    if self.device_card(ui, d, i == self.sel, false).clicked() {
+                        chosen = Some(i);
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Para testar um HD/SSD externo, conecte-o por um adaptador USB-OTG e toque em atualizar.")
+                    .small()
+                    .color(MUTED),
+            );
+            ui.add_space(8.0);
+            if secondary_button(ui, "Fechar", true).clicked() {
+                close = true;
+            }
+        });
+        if resp.should_close() || close {
+            self.picker_open = false;
+        }
+        if refresh {
+            self.refresh_devices();
+        }
+        if let Some(i) = chosen {
+            self.sel = i;
+            self.picker_open = false;
+        }
+    }
+
+    fn top_tabs(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            for t in Tab::ALL {
+                if tab_chip(ui, t.icon(), t.label(), self.tab == t).clicked() {
+                    self.tab = t;
+                }
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    fn bottom_nav(&mut self, ui: &mut egui::Ui) {
+        let w = ui.available_width() / Tab::ALL.len() as f32;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for t in Tab::ALL {
+                if nav_item(ui, w, t.icon(), t.label(), self.tab == t).clicked() {
+                    self.tab = t;
+                }
             }
         });
     }
 
-    fn gauge(ui: &mut egui::Ui, a: &Assessment) {
-        let size = 150.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
-        let p = ui.painter();
-        let c = rect.center();
-        let r = size * 0.42;
-        p.circle_stroke(c, r, Stroke::new(12.0, Color32::from_gray(50)));
-        let frac = a.health as f32 / 100.0;
-        let n = 96;
-        let pts: Vec<egui::Pos2> = (0..=((n as f32 * frac) as usize))
-            .map(|i| {
-                let ang = -std::f32::consts::FRAC_PI_2 + i as f32 / n as f32 * std::f32::consts::TAU;
-                c + Vec2::new(ang.cos(), ang.sin()) * r
-            })
-            .collect();
-        if pts.len() > 1 {
-            p.add(egui::Shape::line(pts, Stroke::new(12.0, health_color(a))));
-        }
-        p.text(c - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, format!("{}%", a.health), egui::FontId::proportional(34.0), Color32::WHITE);
-        p.text(c + Vec2::new(0.0, 22.0), egui::Align2::CENTER_CENTER, a.status_label(), egui::FontId::proportional(14.0), health_color(a));
-    }
+    // ------------------------------------------------------------ Saúde
 
     fn tab_health(&mut self, ui: &mut egui::Ui) {
         let Some(dev) = self.current().cloned() else {
-            ui.label("Nenhum disco encontrado.");
+            empty_state(ui, Icon::Disk, "Nenhum disco encontrado", "Conecte um disco e toque em atualizar.");
             return;
         };
+        let mobile = self.is_mobile();
         let dd = self.data.entry(dev.name.clone()).or_default();
         let (smart, health, loading) = (dd.smart.clone(), dd.health.clone(), dd.loading);
-        ui.horizontal(|ui| {
-            ui.heading(&dev.model);
-            if loading {
-                ui.spinner();
-            }
-        });
-        ui.label(RichText::new(format!("{} · {} · {} · {}", dev.kind.label(), dev.bus, human_bytes(dev.size_bytes), dev.name)).color(DIM));
-        ui.add_space(6.0);
+
+        if dev.smart_path.is_empty() {
+            // Android sem root: armazenamento interno.
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(48.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, 12, ACCENT.gamma_multiply(0.15));
+                    paint_icon(ui.painter(), r.shrink(11.0), Icon::Chip, ACCENT);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&dev.model).size(19.0).strong());
+                        ui.label(RichText::new(format!("{} · {}", human_bytes(dev.size_bytes), dev.bus)).color(MUTED));
+                    });
+                });
+                ui.add_space(10.0);
+                ui.label(
+                    "O Android não permite que apps leiam a saúde (SMART) do chip de memória interno sem root. \
+                     Você ainda pode medir o desempenho real dele no Benchmark.",
+                );
+                ui.add_space(10.0);
+                if primary_button(ui, "Medir desempenho do armazenamento", true).clicked() {
+                    self.tab = Tab::Bench;
+                }
+            });
+            ui.add_space(10.0);
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(48.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, 12, GREEN.gamma_multiply(0.15));
+                    paint_icon(ui.painter(), r.shrink(11.0), Icon::Usb, GREEN);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Testar um HD ou SSD externo").strong());
+                        ui.label(
+                            RichText::new("Conecte o disco com um adaptador USB-OTG. O DiscoLab lê o SMART e faz a varredura de superfície, sem root.")
+                                .color(MUTED),
+                        );
+                    });
+                });
+                ui.add_space(10.0);
+                if secondary_button(ui, "Procurar discos USB", !self.scanning_devices).clicked() {
+                    self.refresh_devices();
+                }
+            });
+            return;
+        }
 
         let Some(s) = smart else {
-            if dev.smart_path.is_empty() {
-                ui.label("Este dispositivo não expõe SMART (Android sem root). Use a aba Benchmark.");
-            } else if discolab_core::usb::is_usb(&dev.smart_path) {
-                ui.label("Abrindo o disco USB… Se o Android perguntar, toque em \"Permitir\" para o DiscoLab acessar o dispositivo.");
-            } else {
-                ui.label("Lendo dados SMART…");
-            }
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new(&dev.model).strong());
+                });
+                ui.add_space(6.0);
+                if discolab_core::usb::is_usb(&dev.smart_path) {
+                    ui.label("Abrindo o disco USB… Se o Android perguntar, toque em \"Permitir\" para o DiscoLab acessar o dispositivo.");
+                } else {
+                    ui.label(RichText::new("Lendo dados SMART…").color(MUTED));
+                }
+            });
             return;
         };
-        let layout = if ui.available_width() < 560.0 {
-            egui::Layout::top_down(egui::Align::Min)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
-        ui.with_layout(layout, |ui| {
+
+        // ---- cartão principal
+        let texts = |ui: &mut egui::Ui| {
+            ui.label(RichText::new(&dev.model).size(20.0).strong());
+            ui.label(RichText::new(format!("{} · {} · {}", dev.kind.label(), dev.bus, human_bytes(dev.size_bytes))).color(MUTED));
+            ui.add_space(8.0);
             if let Some(a) = &health {
-                Self::gauge(ui, a);
-            }
-            ui.vertical(|ui| {
-                egui::Grid::new("facts").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
-                    let mut row = |k: &str, v: String| {
-                        ui.label(RichText::new(k).color(DIM));
-                        ui.label(RichText::new(v).strong());
-                        ui.end_row();
-                    };
-                    if let Some(a) = &health {
-                        if let Some(l) = a.life_left {
-                            row("Vida útil restante", format!("{l}%"));
-                        }
-                        row("Confiança", a.confidence.to_string());
+                ui.horizontal(|ui| {
+                    pill(ui, a.status_label(), health_color(a));
+                    pill(ui, &format!("Confiança {}", a.confidence.split(' ').next().unwrap_or("").to_lowercase()), MUTED);
+                    if loading {
+                        ui.spinner();
                     }
-                    if let Some(t) = s.temperature {
-                        row("Temperatura", format!("{t} °C"));
-                    }
-                    if let Some(h) = s.power_on_hours {
-                        row("Tempo ligado", format!("{h} h ({:.1} anos)", h as f64 / 8760.0));
-                    }
-                    if let Some(c) = s.power_cycles {
-                        row("Ciclos de energia", c.to_string());
-                    }
-                    if let Some(w) = s.host_written_bytes {
-                        row("Total escrito", human_bytes(w));
-                    }
-                    if let Some(r) = s.host_read_bytes {
-                        row("Total lido", human_bytes(r));
-                    }
-                    if let Some(rpm) = s.rotation_rpm.filter(|r| *r > 0) {
-                        row("Rotação", format!("{rpm} RPM"));
-                    }
-                    if let Some(x) = &s.serial {
-                        row("Serial", x.clone());
-                    }
-                    if let Some(x) = &s.firmware {
-                        row("Firmware", x.clone());
-                    }
-                    if let Some(p) = s.smart_passed {
-                        row("Status do firmware", if p { "PASSED".into() } else { "FAILED".into() });
-                    }
-                    row("Fonte", s.source.label().to_string());
                 });
+                ui.add_space(8.0);
+                ui.label(RichText::new(&a.verdict).size(15.0).color(TEXT));
+                if let Some(l) = a.life_left {
+                    ui.add_space(10.0);
+                    life_bar(ui, l);
+                }
+            }
+        };
+        card(ui, |ui| {
+            if mobile {
+                ui.vertical_centered(|ui| {
+                    if let Some(a) = &health {
+                        gauge(ui, a, 170.0);
+                        ui.add_space(10.0);
+                    }
+                });
+                texts(ui);
+            } else {
+                ui.horizontal(|ui| {
+                    if let Some(a) = &health {
+                        gauge(ui, a, 160.0);
+                        ui.add_space(18.0);
+                    }
+                    ui.vertical(texts);
+                });
+            }
+        });
+        ui.add_space(10.0);
+
+        // ---- números principais
+        let mut tiles: Vec<(&str, String, Color32)> = Vec::new();
+        if let Some(t) = s.temperature {
+            let hot = if s.rotation_rpm.unwrap_or(0) > 0 { 50 } else { 70 };
+            tiles.push(("Temperatura", format!("{t} °C"), if t >= hot { ORANGE } else { TEXT }));
+        }
+        if let Some(h) = s.power_on_hours {
+            tiles.push(("Tempo ligado", if h >= 8760 { format!("{:.1} anos", h as f64 / 8760.0) } else { format!("{h} h") }, TEXT));
+        }
+        if let Some(w) = s.host_written_bytes {
+            tiles.push(("Total escrito", human_bytes(w), TEXT));
+        }
+        if let Some(r) = s.host_read_bytes {
+            tiles.push(("Total lido", human_bytes(r), TEXT));
+        }
+        if let Some(c) = s.power_cycles {
+            tiles.push(("Ciclos de energia", c.to_string(), TEXT));
+        }
+        if let Some(rpm) = s.rotation_rpm.filter(|r| *r > 0) {
+            tiles.push(("Rotação", format!("{rpm} RPM"), TEXT));
+        }
+        if let Some(p) = s.smart_passed {
+            tiles.push(("Firmware", if p { "PASSED".into() } else { "FAILED".into() }, if p { GREEN } else { RED }));
+        }
+        if !tiles.is_empty() {
+            stat_grid(ui, &tiles, if mobile { 2 } else { 4 });
+            ui.add_space(10.0);
+        }
+
+        // ---- ações e detalhes
+        card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if secondary_button(ui, "Reler SMART", !loading).clicked() {
+                    self.refresh_smart(&dev);
+                }
+                if s.source == SmartSource::Smartctl {
+                    for (l, k) in [("Autoteste curto", SelfTest::Short), ("Autoteste longo", SelfTest::Long), ("Abortar autoteste", SelfTest::Abort)] {
+                        if secondary_button(ui, l, true).clicked() {
+                            let d = dev.clone();
+                            self.spawn(move |tx| {
+                                let _ = tx.send(Msg::SelfTest(start_self_test(&d, k)));
+                            });
+                        }
+                    }
+                }
             });
-        });
-        if let Some(a) = &health {
-            ui.add_space(4.0);
-            ui.label(RichText::new(&a.verdict).size(16.0).color(health_color(a)));
-            if let Some(l) = a.life_left {
-                ui.add(egui::ProgressBar::new(l as f32 / 100.0).text(format!("Vida útil {l}%")).desired_width(320.0));
-            }
-        }
-        for m in &s.messages {
-            ui.label(RichText::new(format!("• {m}")).small().color(DIM));
-        }
-        if s.needs_admin {
-            ui.colored_label(ORANGE, "Permissão insuficiente. Rode como Administrador (Windows) ou com sudo (Linux/macOS) para SMART completo e varredura de superfície.");
-        }
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Reler SMART").clicked() {
-                self.refresh_smart(&dev);
-            }
-            if s.source == discolab_core::smart::SmartSource::Smartctl {
-                for (l, k) in [("Autoteste curto (~2 min)", SelfTest::Short), ("Autoteste longo", SelfTest::Long), ("Abortar autoteste", SelfTest::Abort)] {
-                    if ui.button(l).clicked() {
-                        let d = dev.clone();
-                        self.spawn(move |tx| {
-                            let _ = tx.send(Msg::SelfTest(start_self_test(&d, k)));
-                        });
-                    }
-                }
-            }
             if let Some(p) = s.self_test_running {
-                ui.label(format!("Autoteste em andamento: {p}% restante"));
+                ui.label(RichText::new(format!("Autoteste em andamento: {p}% restante")).color(ACCENT));
+            }
+            if let Some(m) = &self.selftest_msg {
+                ui.label(RichText::new(m).small());
+            }
+            if s.needs_admin {
+                ui.colored_label(ORANGE, "Permissão insuficiente. Rode como Administrador (Windows) ou com sudo (Linux/macOS) para SMART completo.");
+            }
+            ui.add_space(6.0);
+            let mut info: Vec<String> = s.messages.clone();
+            info.push(format!("Fonte: {}", s.source.label()));
+            info.extend(s.serial.as_ref().map(|v| format!("Serial: {v}")));
+            info.extend(s.firmware.as_ref().map(|v| format!("Firmware: {v}")));
+            for m in info {
+                ui.label(RichText::new(format!("• {m}")).small().color(MUTED));
             }
         });
-        if let Some(m) = &self.selftest_msg {
-            ui.label(RichText::new(m).small());
-        }
-        ui.separator();
-        ui.heading("Diagnóstico");
+        ui.add_space(14.0);
+
+        // ---- diagnóstico
+        section_title(ui, "Diagnóstico");
         if let Some(a) = &health {
-            ui.scope(|ui| {
-                for f in &a.findings {
-                    egui::Frame::group(ui.style()).stroke(Stroke::new(1.0, sev_color(f.severity).gamma_multiply(0.6))).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(f.severity.label()).color(sev_color(f.severity)).strong());
-                            ui.label(RichText::new(&f.title).strong());
-                            if f.penalty > 0.0 {
-                                ui.label(RichText::new(format!("-{:.0} pts", f.penalty)).small().color(DIM));
-                            }
-                        });
-                        ui.label(&f.detail);
-                    });
-                }
-                if !s.self_tests.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("Histórico de autotestes").strong());
-                    for t in s.self_tests.iter().take(8) {
-                        let c = match t.passed {
-                            Some(true) => GREEN,
-                            Some(false) => RED,
-                            None => DIM,
-                        };
-                        ui.label(RichText::new(format!("{} — {} {}", t.kind, t.status, t.hours.map(|h| format!("({h} h)")).unwrap_or_default())).color(c));
-                    }
+            for f in &a.findings {
+                finding_card(ui, f.severity, &f.title, &f.detail, f.penalty);
+                ui.add_space(6.0);
+            }
+        }
+        if !s.self_tests.is_empty() {
+            ui.add_space(8.0);
+            section_title(ui, "Histórico de autotestes");
+            card(ui, |ui| {
+                for t in s.self_tests.iter().take(8) {
+                    let c = match t.passed {
+                        Some(true) => GREEN,
+                        Some(false) => RED,
+                        None => MUTED,
+                    };
+                    ui.label(RichText::new(format!("{} — {} {}", t.kind, t.status, t.hours.map(|h| format!("({h} h)")).unwrap_or_default())).color(c));
                 }
             });
         }
     }
+
+    // ------------------------------------------------------------ SMART
 
     fn tab_smart(&mut self, ui: &mut egui::Ui) {
         let Some(dev) = self.current().cloned() else { return };
         let Some(s) = self.data.get(&dev.name).and_then(|d| d.smart.clone()) else {
-            ui.label("Sem dados SMART.");
+            empty_state(ui, Icon::List, "Sem dados SMART", "Este dispositivo não forneceu atributos SMART.");
             return;
         };
-        egui::ScrollArea::both().show(ui, |ui| {
-            if !s.ata.is_empty() {
-                egui::Grid::new("ata").striped(true).num_columns(7).spacing([14.0, 4.0]).show(ui, |ui| {
-                    for h in ["ID", "Atributo", "Atual", "Pior", "Limite", "Bruto", "Significado"] {
-                        ui.label(RichText::new(h).strong());
-                    }
-                    ui.end_row();
-                    for a in &s.ata {
-                        let (desc, critical) = attr_info(a.id);
-                        let failing = a.thresh > 0 && a.value <= a.thresh;
-                        let bad_raw = critical && (a.raw & 0xFFFF_FFFF) > 0;
-                        let col = if failing {
-                            RED
-                        } else if bad_raw {
-                            ORANGE
-                        } else {
-                            ui.visuals().text_color()
-                        };
-                        ui.label(RichText::new(format!("{:3}", a.id)).monospace());
-                        ui.label(RichText::new(&a.name).color(col));
-                        ui.label(a.value.to_string());
-                        ui.label(a.worst.to_string());
-                        ui.label(a.thresh.to_string());
-                        ui.label(RichText::new(&a.raw_str).monospace().color(col));
-                        ui.label(RichText::new(desc).small().color(DIM));
+        if !s.ata.is_empty() {
+            section_title(ui, "Atributos SMART");
+            card(ui, |ui| {
+                egui::ScrollArea::horizontal().id_salt("ata_h").show(ui, |ui| {
+                    egui::Grid::new("ata").striped(true).num_columns(7).spacing([14.0, 6.0]).show(ui, |ui| {
+                        for h in ["ID", "Atributo", "Atual", "Pior", "Limite", "Bruto", "Significado"] {
+                            ui.label(RichText::new(h).small().strong().color(MUTED));
+                        }
                         ui.end_row();
+                        for a in &s.ata {
+                            let (desc, critical) = attr_info(a.id);
+                            let failing = a.thresh > 0 && a.value <= a.thresh;
+                            let bad_raw = critical && (a.raw & 0xFFFF_FFFF) > 0;
+                            let col = if failing {
+                                RED
+                            } else if bad_raw {
+                                ORANGE
+                            } else {
+                                TEXT
+                            };
+                            ui.label(RichText::new(format!("{:3}", a.id)).monospace().color(MUTED));
+                            ui.label(RichText::new(&a.name).color(col));
+                            ui.label(a.value.to_string());
+                            ui.label(a.worst.to_string());
+                            ui.label(a.thresh.to_string());
+                            ui.label(RichText::new(&a.raw_str).monospace().color(col));
+                            ui.label(RichText::new(desc).small().color(MUTED));
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
+        }
+        if let Some(n) = &s.nvme {
+            section_title(ui, "NVMe SMART / Health Log");
+            let rows: Vec<(&str, String, Option<Color32>)> = vec![
+                ("Aviso crítico", format!("0x{:02X}", n.critical_warning), (n.critical_warning != 0).then_some(RED)),
+                ("Temperatura", n.temperature.map(|t| format!("{t} °C")).unwrap_or("-".into()), None),
+                ("Reserva disponível", format!("{}%", n.available_spare), (n.available_spare < n.available_spare_threshold).then_some(RED)),
+                ("Limite da reserva", format!("{}%", n.available_spare_threshold), None),
+                ("Percentual usado (desgaste)", format!("{}%", n.percentage_used), (n.percentage_used >= 90).then_some(ORANGE)),
+                ("Dados lidos", human_bytes(n.data_units_read * 512_000), None),
+                ("Dados escritos", human_bytes(n.data_units_written * 512_000), None),
+                ("Ciclos de energia", n.power_cycles.to_string(), None),
+                ("Horas ligado", n.power_on_hours.to_string(), None),
+                ("Desligamentos inseguros", n.unsafe_shutdowns.to_string(), None),
+                ("Erros de mídia/integridade", n.media_errors.to_string(), (n.media_errors > 0).then_some(RED)),
+                ("Entradas no log de erros", n.num_err_log_entries.to_string(), None),
+                ("Tempo em temp. de aviso (min)", n.warning_temp_time.to_string(), None),
+                ("Tempo em temp. crítica (min)", n.critical_comp_time.to_string(), None),
+            ];
+            kv_card(ui, "nvme", &rows);
+        }
+        if let Some(f) = &s.flash {
+            section_title(ui, "Memória flash (eMMC/UFS)");
+            let rows: Vec<(&str, String, Option<Color32>)> = vec![
+                ("Desgaste tipo A", f.used_pct_a.map(|x| format!("{}–{x}%", x.saturating_sub(10))).unwrap_or("-".into()), None),
+                ("Desgaste tipo B", f.used_pct_b.map(|x| format!("{}–{x}%", x.saturating_sub(10))).unwrap_or("-".into()), None),
+                (
+                    "Pre-EOL",
+                    match f.pre_eol {
+                        Some(1) => "Normal",
+                        Some(2) => "Aviso",
+                        Some(3) => "Urgente",
+                        _ => "-",
                     }
-                });
-            }
-            if let Some(n) = &s.nvme {
-                ui.heading("NVMe SMART / Health Log");
-                egui::Grid::new("nvme").striped(true).num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
-                    let mut row = |k: &str, v: String, c: Option<Color32>| {
-                        ui.label(k);
-                        let t = RichText::new(v).monospace();
-                        ui.label(if let Some(c) = c { t.color(c) } else { t });
-                        ui.end_row();
-                    };
-                    row("Aviso crítico", format!("0x{:02X}", n.critical_warning), (n.critical_warning != 0).then_some(RED));
-                    row("Temperatura", n.temperature.map(|t| format!("{t} °C")).unwrap_or("-".into()), None);
-                    row("Reserva disponível", format!("{}%", n.available_spare), (n.available_spare < n.available_spare_threshold).then_some(RED));
-                    row("Limite da reserva", format!("{}%", n.available_spare_threshold), None);
-                    row("Percentual usado (desgaste)", format!("{}%", n.percentage_used), (n.percentage_used >= 90).then_some(ORANGE));
-                    row("Dados lidos", human_bytes(n.data_units_read * 512_000), None);
-                    row("Dados escritos", human_bytes(n.data_units_written * 512_000), None);
-                    row("Ciclos de energia", n.power_cycles.to_string(), None);
-                    row("Horas ligado", n.power_on_hours.to_string(), None);
-                    row("Desligamentos inseguros", n.unsafe_shutdowns.to_string(), None);
-                    row("Erros de mídia/integridade", n.media_errors.to_string(), (n.media_errors > 0).then_some(RED));
-                    row("Entradas no log de erros", n.num_err_log_entries.to_string(), None);
-                    row("Tempo em temp. de aviso (min)", n.warning_temp_time.to_string(), None);
-                    row("Tempo em temp. crítica (min)", n.critical_comp_time.to_string(), None);
-                });
-            }
-            if let Some(f) = &s.flash {
-                ui.heading("Memória flash (eMMC/UFS)");
-                ui.label(format!("Desgaste tipo A: {}", f.used_pct_a.map(|x| format!("{}–{x}%", x.saturating_sub(10))).unwrap_or("-".into())));
-                ui.label(format!("Desgaste tipo B: {}", f.used_pct_b.map(|x| format!("{}–{x}%", x.saturating_sub(10))).unwrap_or("-".into())));
-                ui.label(format!("Pre-EOL: {}", match f.pre_eol { Some(1) => "Normal", Some(2) => "Aviso", Some(3) => "Urgente", _ => "-" }));
-            }
-            for (k, v) in &s.extra {
-                ui.label(format!("{k}: {v}"));
-            }
-            if s.ata.is_empty() && s.nvme.is_none() && s.flash.is_none() && s.extra.is_empty() {
-                ui.label("Nenhum atributo disponível.");
-            }
-        });
+                    .into(),
+                    None,
+                ),
+            ];
+            kv_card(ui, "flash", &rows);
+        }
+        if !s.extra.is_empty() {
+            section_title(ui, "Contadores do Windows");
+            let rows: Vec<(&str, String, Option<Color32>)> = s.extra.iter().map(|(k, v)| (k.as_str(), v.clone(), None)).collect();
+            kv_card(ui, "extra", &rows);
+        }
+        if s.ata.is_empty() && s.nvme.is_none() && s.flash.is_none() && s.extra.is_empty() {
+            empty_state(ui, Icon::List, "Nenhum atributo disponível", &s.messages.join("\n"));
+        }
     }
+
+    // ------------------------------------------------------------ Benchmark
 
     fn bench_dir(&self) -> Option<PathBuf> {
         if self.bench.custom {
@@ -719,8 +881,12 @@ impl App {
         let tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
         let best = |root: &PathBuf| -> bool {
-            // o volume mais específico que contém o caminho
-            self.volumes.iter().filter(|x| root.starts_with(&x.mount)).max_by_key(|x| x.mount.as_os_str().len()).map(|x| x.mount == v.mount).unwrap_or(false)
+            self.volumes
+                .iter()
+                .filter(|x| root.starts_with(&x.mount))
+                .max_by_key(|x| x.mount.as_os_str().len())
+                .map(|x| x.mount == v.mount)
+                .unwrap_or(false)
         };
         Some(if best(&tmp) {
             tmp.join("DiscoLab")
@@ -731,134 +897,186 @@ impl App {
         })
     }
 
-    fn tab_bench(&mut self, ui: &mut egui::Ui) {
-        let running = self.bench.running;
-        ui.add_enabled_ui(!running, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Destino:");
-                let sel_text = if self.bench.custom {
-                    "Pasta personalizada".to_string()
-                } else {
-                    self.volumes.get(self.bench.vol).map(|v| format!("{} ({} livres)", v.mount.display(), human_bytes(v.free))).unwrap_or("-".into())
-                };
-                egui::ComboBox::from_id_salt("vol").selected_text(sel_text).width(280.0).show_ui(ui, |ui| {
-                    for (i, v) in self.volumes.iter().enumerate() {
-                        if ui.selectable_label(!self.bench.custom && self.bench.vol == i, format!("{}  [{}]  {} livres", v.mount.display(), v.fs, human_bytes(v.free))).clicked() {
-                            self.bench.vol = i;
-                            self.bench.custom = false;
-                        }
-                    }
-                    if ui.selectable_label(self.bench.custom, "Pasta personalizada…").clicked() {
+    fn bench_settings(&mut self, ui: &mut egui::Ui) {
+        let mobile = self.is_mobile();
+        let internal = BENCH_DIR.get().map(|p| p.display().to_string());
+        let is_internal = self.bench.custom && internal.as_deref() == Some(self.bench.dir.as_str());
+        ui.add_enabled_ui(!self.bench.running, |ui| {
+            ui.label(RichText::new("Destino").small().color(MUTED));
+            let sel_text = if is_internal {
+                "Armazenamento interno do app".to_string()
+            } else if self.bench.custom {
+                "Pasta personalizada".to_string()
+            } else {
+                self.volumes.get(self.bench.vol).map(|v| format!("{} ({} livres)", v.mount.display(), human_bytes(v.free))).unwrap_or("-".into())
+            };
+            egui::ComboBox::from_id_salt("vol").selected_text(sel_text).width(ui.available_width().min(420.0)).show_ui(ui, |ui| {
+                if let Some(p) = &internal {
+                    if ui.selectable_label(is_internal, "Armazenamento interno do app").clicked() {
                         self.bench.custom = true;
+                        self.bench.dir = p.clone();
                     }
-                });
-                if self.bench.custom {
-                    ui.add(egui::TextEdit::singleline(&mut self.bench.dir).hint_text("/caminho/da/pasta").desired_width(220.0));
+                }
+                for (i, v) in self.volumes.iter().enumerate() {
+                    let t = format!("{}  [{}]  {} livres", v.mount.display(), v.fs, human_bytes(v.free));
+                    if ui.selectable_label(!self.bench.custom && self.bench.vol == i, t).clicked() {
+                        self.bench.vol = i;
+                        self.bench.custom = false;
+                    }
+                }
+                if ui.selectable_label(self.bench.custom && !is_internal, "Pasta personalizada…").clicked() {
+                    self.bench.custom = true;
+                    self.bench.dir.clear();
                 }
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Arquivo:");
+            if self.bench.custom && !is_internal {
+                ui.add(egui::TextEdit::singleline(&mut self.bench.dir).hint_text("/caminho/da/pasta").desired_width(ui.available_width().min(420.0)));
+            }
+            ui.add_space(8.0);
+            egui::Grid::new("bset").num_columns(if mobile { 2 } else { 4 }).spacing([12.0, 10.0]).show(ui, |ui| {
+                ui.label(RichText::new("Arquivo de teste").color(MUTED));
                 egui::ComboBox::from_id_salt("size").selected_text(fmt_mib(self.bench.size_mib)).show_ui(ui, |ui| {
                     for m in [256u64, 512, 1024, 2048, 4096, 8192, 16384] {
                         ui.selectable_value(&mut self.bench.size_mib, m, fmt_mib(m));
                     }
                 });
-                ui.label("Duração/teste:");
+                if mobile {
+                    ui.end_row();
+                }
+                ui.label(RichText::new("Duração por teste").color(MUTED));
                 ui.add(egui::Slider::new(&mut self.bench.secs, 2.0..=30.0).suffix(" s").integer());
-                ui.label("Escrita sustentada:");
-                ui.add(egui::Slider::new(&mut self.bench.sustained_gib, 0.0..=64.0).suffix(" GiB").integer())
-                    .on_hover_text("Escreve vários GB seguidos para revelar a velocidade real depois que o cache SLC/DRAM enche. 0 = desligado.");
-                ui.checkbox(&mut self.bench.direct, "Sem cache do SO").on_hover_text("Recomendado. Desligar mede a RAM, como alguns programas fazem.");
+                ui.end_row();
+                ui.label(RichText::new("Escrita sustentada").color(MUTED));
+                ui.add(egui::Slider::new(&mut self.bench.sustained_gib, 0.0..=64.0).suffix(" GiB").integer()).on_hover_text(
+                    "Escreve vários GB seguidos para revelar a velocidade real depois que o cache SLC/DRAM enche. 0 = desligado.",
+                );
+                if mobile {
+                    ui.end_row();
+                }
+                ui.label(RichText::new("Cache do SO").color(MUTED));
+                ui.checkbox(&mut self.bench.direct, "Desligado (recomendado)");
+                ui.end_row();
             });
         });
-        ui.horizontal(|ui| {
+    }
+
+    fn tab_bench(&mut self, ui: &mut egui::Ui) {
+        let mobile = self.is_mobile();
+        let running = self.bench.running;
+        card(ui, |ui| {
+            if mobile {
+                egui::CollapsingHeader::new(RichText::new("Configurações").strong())
+                    .default_open(true)
+                    .show(ui, |ui| self.bench_settings(ui));
+            } else {
+                self.bench_settings(ui);
+            }
+            ui.add_space(10.0);
             if !running {
-                if ui.add(egui::Button::new(RichText::new("Iniciar benchmark").strong()).fill(Color32::from_rgb(30, 110, 60))).clicked() {
+                if primary_button(ui, "Iniciar benchmark", true).clicked() {
                     self.start_bench();
                 }
-            } else if ui.add(egui::Button::new("Parar").fill(Color32::from_rgb(130, 40, 40))).clicked() {
+            } else if danger_button(ui, "Parar").clicked() {
                 self.bench.cancel.store(true, Ordering::Relaxed);
             }
-            if running {
-                ui.spinner();
-            }
-            ui.label(&self.bench.phase);
-        });
-        if running || self.bench.progress > 0.0 {
-            ui.add(egui::ProgressBar::new(self.bench.progress).show_percentage());
-        }
-        if let Some(e) = &self.bench.error {
-            ui.colored_label(ORANGE, e);
-        }
-        if let Some(r) = &self.bench.report {
-            for w in &r.warnings {
-                if Some(w) != self.bench.error.as_ref() {
-                    ui.colored_label(ORANGE, w);
-                }
-            }
-            if !r.uncached {
-                ui.colored_label(ORANGE, "Atenção: resultado com cache do SO: os números de leitura não representam o disco.");
-            }
-        }
-        ui.separator();
-        egui::ScrollArea::both().id_salt("bench_scroll").show(ui, |ui| {
-            egui::Grid::new("bres").striped(true).num_columns(7).spacing([18.0, 6.0]).show(ui, |ui| {
-                for h in ["Teste", "MB/s", "IOPS", "Lat. média", "p50", "p99", "p99.9 / máx"] {
-                    ui.label(RichText::new(h).strong());
-                }
-                ui.end_row();
-                for (i, t) in self.bench.tests.iter().enumerate() {
-                    ui.label(&t.name);
-                    match self.bench.results.get(i).and_then(|x| x.as_ref()) {
-                        Some(r) => {
-                            ui.label(RichText::new(format!("{:.1}", r.mbps)).size(18.0).strong().color(if t.write { ORANGE } else { BLUE }));
-                            ui.label(format!("{:.0}", r.iops));
-                            ui.label(fmt_us(r.lat_avg_us as u32));
-                            ui.label(fmt_us(r.lat_p50_us));
-                            ui.label(fmt_us(r.lat_p99_us));
-                            ui.label(format!("{} / {}", fmt_us(r.lat_p999_us), fmt_us(r.lat_max_us)));
-                        }
-                        None => {
-                            for _ in 0..6 {
-                                ui.label(RichText::new("—").color(DIM));
-                            }
-                        }
+            if running || self.bench.progress > 0.0 {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if running {
+                        ui.spinner();
                     }
-                    ui.end_row();
+                    ui.label(RichText::new(&self.bench.phase).color(MUTED));
+                });
+                ui.add(egui::ProgressBar::new(self.bench.progress).fill(ACCENT).corner_radius(6));
+            }
+            if let Some(e) = &self.bench.error {
+                ui.colored_label(ORANGE, e);
+            }
+            if let Some(r) = &self.bench.report {
+                for w in &r.warnings {
+                    if Some(w) != self.bench.error.as_ref() {
+                        ui.colored_label(ORANGE, w);
+                    }
+                }
+                if !r.uncached {
+                    ui.colored_label(ORANGE, "Atenção: resultado com cache do SO — os números de leitura não representam o disco.");
+                }
+            }
+        });
+        ui.add_space(14.0);
+
+        ui.horizontal(|ui| {
+            section_title(ui, "Resultados");
+            ui.add_space(12.0);
+            legend_dot(ui, BLUE, "Leitura");
+            legend_dot(ui, ORANGE, "Escrita");
+        });
+        for i in 0..self.bench.tests.len() / 2 {
+            let (r_i, w_i) = (2 * i, 2 * i + 1);
+            let name = self.bench.tests[r_i].name.trim_end_matches(" Leitura").to_string();
+            let rr = self.bench.results.get(r_i).cloned().flatten();
+            let wr = self.bench.results.get(w_i).cloned().flatten();
+            let active = running && (self.bench.live_test == r_i || self.bench.live_test == w_i);
+            bench_row(ui, &name, rr.as_ref(), wr.as_ref(), active, mobile);
+            ui.add_space(8.0);
+        }
+
+        if !self.bench.live.is_empty() {
+            let name = self.bench.tests.get(self.bench.live_test).map(|t| t.name.clone()).unwrap_or_default();
+            ui.add_space(6.0);
+            section_title(ui, &format!("Vazão ao longo do teste — {name}"));
+            let pts = self.bench.live.clone();
+            card(ui, |ui| {
+                Plot::new("live")
+                    .height(160.0)
+                    .include_y(0.0)
+                    .include_x(0.0)
+                    .allow_scroll(false)
+                    .allow_drag(false)
+                    .x_axis_label("s")
+                    .y_axis_label("MB/s")
+                    .show(ui, |p| {
+                        p.line(Line::new("MB/s", PlotPoints::from(pts)).color(ACCENT).width(2.0));
+                    });
+            });
+            ui.add_space(8.0);
+        }
+        if !self.bench.sustained.is_empty() {
+            section_title(ui, "Escrita sustentada (cache SLC/DRAM)");
+            let pts = self.bench.sustained.clone();
+            card(ui, |ui| {
+                Plot::new("sust")
+                    .height(180.0)
+                    .include_y(0.0)
+                    .include_x(0.0)
+                    .allow_scroll(false)
+                    .allow_drag(false)
+                    .x_axis_label("GB escritos")
+                    .y_axis_label("MB/s")
+                    .show(ui, |p| {
+                        p.line(Line::new("MB/s", PlotPoints::from(pts)).color(ORANGE).width(2.0));
+                    });
+                if let Some(s) = self.bench.report.as_ref().and_then(|r| r.sustained.as_ref()) {
+                    let tiles = vec![
+                        ("Pico", format!("{:.0} MB/s", s.burst_mbps), TEXT),
+                        ("Sustentado", format!("{:.0} MB/s", s.sustained_mbps), ORANGE),
+                        ("Mínimo", format!("{:.0} MB/s", s.min_mbps), TEXT),
+                        ("Cache estimado", s.cache_estimate_bytes.map(|c| format!("~{}", human_bytes(c))).unwrap_or("sem queda".into()), TEXT),
+                    ];
+                    ui.add_space(8.0);
+                    stat_grid(ui, &tiles, if mobile { 2 } else { 4 });
                 }
             });
             ui.add_space(8.0);
-            if !self.bench.live.is_empty() {
-                let name = self.bench.tests.get(self.bench.live_test).map(|t| t.name.clone()).unwrap_or_default();
-                ui.label(RichText::new(format!("Vazão ao longo do teste: {name}")).strong());
-                let pts = self.bench.live.clone();
-                Plot::new("live").height(160.0).include_y(0.0).include_x(0.0).allow_scroll(false).x_axis_label("s").y_axis_label("MB/s").show(ui, |p| {
-                    p.line(Line::new("MB/s", PlotPoints::from(pts)).color(BLUE));
-                });
-            }
-            if !self.bench.sustained.is_empty() {
-                ui.label(RichText::new("Escrita sustentada (cache SLC/DRAM)").strong());
-                let pts = self.bench.sustained.clone();
-                Plot::new("sust").height(180.0).include_y(0.0).include_x(0.0).allow_scroll(false).x_axis_label("GB escritos").y_axis_label("MB/s").show(ui, |p| {
-                    p.line(Line::new("MB/s", PlotPoints::from(pts)).color(ORANGE));
-                });
-                if let Some(s) = self.bench.report.as_ref().and_then(|r| r.sustained.as_ref()) {
-                    ui.label(format!(
-                        "Pico {:.0} MB/s · Sustentado {:.0} MB/s · Mínimo {:.0} MB/s · {}",
-                        s.burst_mbps,
-                        s.sustained_mbps,
-                        s.min_mbps,
-                        s.cache_estimate_bytes.map(|c| format!("cache estimado ~{}", human_bytes(c))).unwrap_or("sem queda de cache detectada".into())
-                    ));
-                }
-            }
-            ui.add_space(6.0);
-            ui.label(RichText::new(
-                "Como garantimos números honestos: E/S direta sem cache do SO, dados aleatórios (incompressíveis) com \
-                 cada página alterada a cada escrita, latência por operação (p99/máx revelam travadas) e teste de escrita \
-                 sustentada para expor o fim do cache SLC.",
-            ).small().color(DIM));
-        });
+        }
+        ui.label(
+            RichText::new(
+                "Números honestos: E/S direta sem cache do SO, dados aleatórios incompressíveis (cada página muda a cada escrita), \
+                 latência por operação (p99/máx revelam travadas) e escrita sustentada para expor o fim do cache SLC.",
+            )
+            .small()
+            .color(MUTED),
+        );
     }
 
     fn start_bench(&mut self) {
@@ -891,75 +1109,108 @@ impl App {
         });
     }
 
+    // ------------------------------------------------------------ Superfície
+
     fn tab_surface(&mut self, ui: &mut egui::Ui) {
         let Some(dev) = self.current().cloned() else { return };
         if dev.raw_path.is_empty() {
-            ui.label("Acesso bruto ao dispositivo indisponível (no Android é necessário root).");
+            empty_state(
+                ui,
+                Icon::Grid,
+                "Varredura indisponível",
+                "O Android não permite ler o chip interno sem root. Conecte um HD/SSD por adaptador USB-OTG para fazer a varredura de superfície.",
+            );
             return;
         }
+        let mobile = self.is_mobile();
         let running = self.scan.running;
-        let usb = discolab_core::usb::is_usb(&dev.raw_path);
-        if usb {
-            ui.colored_label(YELLOW, "Disco USB acessado diretamente: o Android desmonta o volume durante o teste. Reconecte o adaptador para usá-lo normalmente depois.");
-        } else if !discolab_core::util::is_elevated() {
-            ui.colored_label(ORANGE, if cfg!(windows) {
-                "A leitura bruta do disco exige executar o DiscoLab como Administrador."
-            } else {
-                "A leitura bruta do disco exige root: execute com sudo (ex.: sudo ./discolab)."
-            });
-        }
-        ui.label(RichText::new("Leitura de toda a superfície em modo SOMENTE LEITURA — seguro para os dados. Blocos lentos ou com erro são relidos para confirmar.").color(DIM));
-        ui.add_enabled_ui(!running, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Início:");
-                ui.add(egui::DragValue::new(&mut self.scan.start_pct).range(0.0..=99.0).suffix(" %"));
-                ui.label("Fim:");
-                ui.add(egui::DragValue::new(&mut self.scan.end_pct).range(1.0..=100.0).suffix(" %"));
-                ui.label("Bloco:");
-                egui::ComboBox::from_id_salt("blk").selected_text(format!("{} KiB", self.scan.block_kib)).show_ui(ui, |ui| {
-                    for k in [64usize, 128, 256, 512, 1024, 4096] {
-                        ui.selectable_value(&mut self.scan.block_kib, k, format!("{k} KiB"));
-                    }
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("Lê toda a superfície em modo SOMENTE LEITURA — seguro para os dados. Blocos lentos ou com erro são relidos para confirmar.")
+                    .color(MUTED),
+            );
+            if discolab_core::usb::is_usb(&dev.raw_path) {
+                ui.colored_label(YELLOW, "Disco USB acessado diretamente: o Android desmonta o volume durante o teste. Reconecte o adaptador depois.");
+            } else if !discolab_core::util::is_elevated() {
+                ui.colored_label(
+                    ORANGE,
+                    if cfg!(windows) {
+                        "A leitura bruta do disco exige executar o DiscoLab como Administrador."
+                    } else {
+                        "A leitura bruta do disco exige root: execute com sudo (ex.: sudo ./discolab)."
+                    },
+                );
+            }
+            ui.add_space(8.0);
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Início").color(MUTED));
+                    ui.add(egui::DragValue::new(&mut self.scan.start_pct).range(0.0..=99.0).suffix(" %"));
+                    ui.label(RichText::new("Fim").color(MUTED));
+                    ui.add(egui::DragValue::new(&mut self.scan.end_pct).range(1.0..=100.0).suffix(" %"));
+                    ui.label(RichText::new("Bloco").color(MUTED));
+                    egui::ComboBox::from_id_salt("blk").selected_text(format!("{} KiB", self.scan.block_kib)).show_ui(ui, |ui| {
+                        for k in [64usize, 128, 256, 512, 1024, 4096] {
+                            ui.selectable_value(&mut self.scan.block_kib, k, format!("{k} KiB"));
+                        }
+                    });
                 });
             });
-        });
-        ui.horizontal(|ui| {
+            ui.add_space(10.0);
             if !running {
-                if ui.add(egui::Button::new(RichText::new("Iniciar varredura").strong()).fill(Color32::from_rgb(30, 110, 60))).clicked() {
+                if primary_button(ui, "Iniciar varredura", true).clicked() {
                     self.start_scan(&dev);
                 }
-            } else {
-                if ui.add(egui::Button::new("Parar").fill(Color32::from_rgb(130, 40, 40))).clicked() {
-                    self.scan.cancel.store(true, Ordering::Relaxed);
-                }
-                ui.spinner();
+            } else if danger_button(ui, "Parar").clicked() {
+                self.scan.cancel.store(true, Ordering::Relaxed);
             }
             if self.scan.total > 0 {
                 let pct = self.scan.done as f64 / self.scan.total as f64;
-                let eta = self.scan.started.map(|t| t.elapsed().as_secs_f64()).filter(|_| pct > 0.001).map(|e| e / pct - e).unwrap_or(0.0);
-                ui.label(format!("{:.1}% · {:.0} MB/s{}", pct * 100.0, self.scan.mbps, if running { format!(" · faltam ~{}", fmt_dur(eta)) } else { String::new() }));
+                let eta = self
+                    .scan
+                    .started
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .filter(|_| pct > 0.001)
+                    .map(|e| e / pct - e)
+                    .unwrap_or(0.0);
+                ui.add_space(8.0);
+                ui.add(egui::ProgressBar::new(pct as f32).fill(ACCENT).corner_radius(6));
+                ui.label(
+                    RichText::new(format!(
+                        "{:.1}% · {:.0} MB/s{}{}",
+                        pct * 100.0,
+                        self.scan.mbps,
+                        if running { format!(" · faltam ~{}", fmt_dur(eta)) } else { String::new() },
+                        if self.scan.dev != dev.name { format!(" · mapa de {}", self.scan.dev) } else { String::new() }
+                    ))
+                    .color(MUTED),
+                );
             }
-            if self.scan.dev != dev.name && !self.scan.dev.is_empty() {
-                ui.label(RichText::new(format!("(mapa de {})", self.scan.dev)).color(DIM));
+            if let Some(e) = &self.scan.error {
+                ui.colored_label(RED, e);
             }
         });
-        if let Some(e) = &self.scan.error {
-            ui.colored_label(RED, e);
-        }
-        if self.scan.total > 0 {
-            ui.add(egui::ProgressBar::new(self.scan.done as f32 / self.scan.total as f32));
-        }
-        egui::ScrollArea::vertical().id_salt("scan_scroll").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+        ui.add_space(14.0);
+
+        section_title(ui, "Mapa de blocos");
+        card(ui, |ui| {
+            let cols_legend = if mobile { 2 } else { 4 };
+            ui.spacing_mut().interact_size.y = 18.0;
+            egui::Grid::new("legend").num_columns(cols_legend).spacing([16.0, 6.0]).show(ui, |ui| {
                 for (i, l) in BUCKET_LABELS.iter().enumerate() {
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
-                    ui.painter().rect_filled(r, 2.0, bucket_color(i as u8));
-                    ui.label(format!("{l}: {}", self.scan.buckets[i]));
-                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 3, bucket_color(i as u8));
+                        ui.label(RichText::new(*l).small().color(MUTED));
+                        ui.label(RichText::new(self.scan.buckets[i].to_string()).small().strong());
+                    });
+                    if (i + 1) % cols_legend == 0 {
+                        ui.end_row();
+                    }
                 }
             });
-            // mapa de blocos
-            let w = ui.available_width().min(1100.0);
+            ui.add_space(10.0);
+            let w = ui.available_width().min(1060.0);
             let cols = if w > 700.0 { 128 } else { 64 };
             let rows = MAP_CELLS / cols;
             let cs = w / cols as f32;
@@ -967,8 +1218,8 @@ impl App {
             let p = ui.painter_at(rect);
             for (i, &b) in self.scan.cells.iter().enumerate() {
                 let (x, y) = ((i % cols) as f32, (i / cols) as f32);
-                let r = egui::Rect::from_min_size(rect.min + Vec2::new(x * cs, y * cs), Vec2::splat(cs - 1.0));
-                p.rect_filled(r, 1.0, bucket_color(b));
+                let r = egui::Rect::from_min_size(rect.min + Vec2::new(x * cs, y * cs), Vec2::splat((cs - 1.0).max(1.0)));
+                p.rect_filled(r, 1, bucket_color(b));
             }
             if let Some(pos) = resp.hover_pos() {
                 let i = (((pos.y - rect.min.y) / cs) as usize) * cols + ((pos.x - rect.min.x) / cs) as usize;
@@ -977,23 +1228,44 @@ impl App {
                     resp.on_hover_text(format!("~{:.2}% do disco · {}", pct, BUCKET_LABELS.get(self.scan.cells[i] as usize).copied().unwrap_or("não lido")));
                 }
             }
-            if !self.scan.curve.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("Velocidade de leitura ao longo do disco").strong());
-                let pts = self.scan.curve.clone();
-                Plot::new("scurve").height(170.0).include_y(0.0).include_x(0.0).include_x(100.0).allow_scroll(false).x_axis_label("% do disco").y_axis_label("MB/s").show(ui, |p| {
-                    p.line(Line::new("MB/s", PlotPoints::from(pts)).color(GREEN));
-                });
-            }
-            for l in self.scan.log.iter().rev().take(12) {
-                ui.label(RichText::new(l).small());
-            }
-            ui.label(RichText::new(
-                "Diferente do Victoria, um bloco lento só conta como problema se continuar lento nas releituras — \
-                 picos causados pelo sistema operacional são marcados como transitórios. Em SSDs, a varredura detecta \
-                 blocos ilegíveis e travamentos do controlador; a lentidão por posição só é relevante em HDDs.",
-            ).small().color(DIM));
         });
+        if !self.scan.curve.is_empty() {
+            ui.add_space(14.0);
+            section_title(ui, "Velocidade ao longo do disco");
+            let pts = self.scan.curve.clone();
+            card(ui, |ui| {
+                Plot::new("scurve")
+                    .height(170.0)
+                    .include_y(0.0)
+                    .include_x(0.0)
+                    .include_x(100.0)
+                    .allow_scroll(false)
+                    .allow_drag(false)
+                    .x_axis_label("% do disco")
+                    .y_axis_label("MB/s")
+                    .show(ui, |p| {
+                        p.line(Line::new("MB/s", PlotPoints::from(pts)).color(GREEN).width(2.0));
+                    });
+            });
+        }
+        if !self.scan.log.is_empty() {
+            ui.add_space(14.0);
+            section_title(ui, "Registro");
+            card(ui, |ui| {
+                for l in self.scan.log.iter().rev().take(12) {
+                    ui.label(RichText::new(l).small());
+                }
+            });
+        }
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(
+                "Diferente do Victoria, um bloco lento só conta como problema se continuar lento nas releituras — picos causados pelo \
+                 sistema são marcados como transitórios. Em SSDs, a varredura detecta blocos ilegíveis e travamentos do controlador.",
+            )
+            .small()
+            .color(MUTED),
+        );
     }
 
     fn start_scan(&mut self, dev: &Device) {
@@ -1026,6 +1298,8 @@ impl App {
         });
     }
 
+    // ------------------------------------------------------------ Relatório
+
     fn tab_report(&mut self, ui: &mut egui::Ui) {
         let Some(dev) = self.current().cloned() else { return };
         let dd = self.data.get(&dev.name);
@@ -1034,23 +1308,52 @@ impl App {
         let scan = dd.and_then(|d| d.scan.as_ref());
         let bench = self.bench.report.as_ref();
         let mut text = text_report(&dev, smart, health, bench, scan);
-        ui.horizontal(|ui| {
-            if ui.button("Salvar (.txt + .json)").clicked() {
-                let json = serde_json::json!({"device": dev, "smart": smart, "assessment": health, "benchmark": bench, "surface": scan});
-                self.status = match save_report(&dev, &text, &json) {
-                    Ok(p) => format!("Relatório salvo em {}", p.display()),
-                    Err(e) => format!("Erro ao salvar: {e}"),
-                };
-            }
-            if ui.button("Copiar").clicked() {
-                ui.ctx().copy_text(text.clone());
-                self.status = "Relatório copiado.".into();
+        let mut status = None;
+        card(ui, |ui| {
+            ui.label("Resumo completo do disco selecionado: SMART, diagnóstico, benchmark e varredura. Salve para guardar o histórico ou copie para compartilhar.");
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if primary_button(ui, "Salvar (.txt + .json)", true).clicked() {
+                    let json = serde_json::json!({"device": dev, "smart": smart, "assessment": health, "benchmark": bench, "surface": scan});
+                    status = Some(match save_report(&dev, &text, &json) {
+                        Ok(p) => format!("Relatório salvo em {}", p.display()),
+                        Err(e) => format!("Erro ao salvar: {e}"),
+                    });
+                }
+                if secondary_button(ui, "Copiar", true).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                    status = Some("Relatório copiado.".into());
+                }
+            });
+            if self.status.starts_with("Relatório") || self.status.starts_with("Erro") {
+                ui.label(RichText::new(&self.status).small().color(ACCENT));
             }
         });
-        egui::ScrollArea::both().show(ui, |ui| {
-            ui.add(egui::TextEdit::multiline(&mut text).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(true));
+        if let Some(s) = status {
+            self.status = s;
+        }
+        ui.add_space(10.0);
+        card(ui, |ui| {
+            egui::ScrollArea::horizontal().id_salt("rep_h").show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .frame(egui::Frame::NONE)
+                        .interactive(true),
+                );
+            });
         });
     }
+}
+
+fn fmt_mib(m: u64) -> String {
+    if m >= 1024 { format!("{} GiB", m / 1024) } else { format!("{m} MiB") }
+}
+
+fn fmt_dur(s: f64) -> String {
+    let s = s.max(0.0) as u64;
+    if s >= 3600 { format!("{}h{:02}m", s / 3600, (s % 3600) / 60) } else { format!("{}m{:02}s", s / 60, s % 60) }
 }
 
 fn fmt_us(us: u32) -> String {
@@ -1065,64 +1368,70 @@ fn fmt_us(us: u32) -> String {
     }
 }
 
-fn fmt_mib(m: u64) -> String {
-    if m >= 1024 { format!("{} GiB", m / 1024) } else { format!("{m} MiB") }
-}
-
-fn fmt_dur(s: f64) -> String {
-    let s = s.max(0.0) as u64;
-    if s >= 3600 { format!("{}h{:02}m", s / 3600, (s % 3600) / 60) } else { format!("{}m{:02}s", s / 60, s % 60) }
+fn m(l: f32, r: f32, t: f32, b: f32) -> egui::Margin {
+    egui::Margin { left: l.clamp(0.0, 120.0) as i8, right: r.clamp(0.0, 120.0) as i8, top: t.clamp(0.0, 120.0) as i8, bottom: b.clamp(0.0, 120.0) as i8 }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
-        let narrow = ui.available_width() < 760.0;
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&self.status).small().color(DIM));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(concat!("DiscoLab v", env!("CARGO_PKG_VERSION"))).small().color(DIM));
-                });
-            });
-        });
-        if narrow {
-            egui::Panel::top("top").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let names: Vec<String> = self.devices.iter().map(|d| format!("{} ({})", d.model, human_bytes(d.size_bytes))).collect();
-                    egui::ComboBox::new("devsel", "Disco").selected_text(names.get(self.sel).cloned().unwrap_or_default()).width(ui.available_width() - 140.0).show_ui(ui, |ui| {
-                        for (i, n) in names.iter().enumerate() {
-                            ui.selectable_value(&mut self.sel, i, n);
-                        }
-                    });
-                    if ui.button("Atualizar").clicked() {
-                        self.refresh_devices();
-                    }
-                });
-                self.tabs(ui);
-            });
-        } else {
-            egui::Panel::left("devs").resizable(true).default_size(270.0).show(ui, |ui| self.device_list(ui));
-            egui::Panel::top("tabs").show(ui, |ui| self.tabs(ui));
+        let ctx = ui.ctx().clone();
+        self.update_insets(&ctx);
+        let mobile = ui.available_width() < 760.0;
+        if self.mobile != Some(mobile) {
+            self.mobile = Some(mobile);
+            apply_theme(&ctx, mobile);
         }
-        egui::CentralPanel::default().show(ui, |ui| match self.tab {
-            Tab::Health => {
-                egui::ScrollArea::vertical().id_salt("health_scroll").show(ui, |ui| self.tab_health(ui));
-            }
-            Tab::Smart => self.tab_smart(ui),
-            Tab::Bench => self.tab_bench(ui),
-            Tab::Surface => self.tab_surface(ui),
-            Tab::Report => self.tab_report(ui),
+        let [il, it, ir, ib] = self.insets;
+
+        if mobile {
+            egui::Panel::top("m_top")
+                .frame(egui::Frame::new().fill(PANEL).inner_margin(m(14.0 + il, 14.0 + ir, it, 0.0)))
+                .show(ui, |ui| self.mobile_header(ui));
+            egui::Panel::bottom("m_nav")
+                .frame(egui::Frame::new().fill(PANEL).stroke(Stroke::new(1.0, BORDER)).inner_margin(m(il, ir, 6.0, ib + 6.0)))
+                .show(ui, |ui| self.bottom_nav(ui));
+        } else {
+            egui::Panel::bottom("status").frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(14, 5))).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&self.status).small().color(MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(concat!("DiscoLab v", env!("CARGO_PKG_VERSION"))).small().color(MUTED));
+                    });
+                });
+            });
+            egui::Panel::left("devs")
+                .resizable(true)
+                .default_size(300.0)
+                .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(14, 10)))
+                .show(ui, |ui| self.sidebar(ui));
+            egui::Panel::top("tabs").frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(18, 0))).show(ui, |ui| self.top_tabs(ui));
+        }
+        let margin = if mobile { m(12.0 + il, 12.0 + ir, 12.0, 8.0) } else { egui::Margin::symmetric(18, 12) };
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(margin)).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(("main", self.tab as u8)).auto_shrink([false, false]).show(ui, |ui| {
+                let w = ui.available_width().min(1100.0);
+                ui.set_max_width(w);
+                match self.tab {
+                    Tab::Health => self.tab_health(ui),
+                    Tab::Smart => self.tab_smart(ui),
+                    Tab::Bench => self.tab_bench(ui),
+                    Tab::Surface => self.tab_surface(ui),
+                    Tab::Report => self.tab_report(ui),
+                }
+                ui.add_space(16.0);
+            });
         });
+        self.device_picker(&ctx);
         if self.bench.running || self.scan.running {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
 }
 
 pub fn options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1180.0, 780.0]).with_min_inner_size([420.0, 400.0]).with_title("DiscoLab"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_min_inner_size([380.0, 480.0]).with_title("DiscoLab"),
         ..Default::default()
     }
 }
@@ -1153,6 +1462,9 @@ impl App {
             "bench" => self.tab = Tab::Bench,
             "surface" => self.tab = Tab::Surface,
             "report" => self.tab = Tab::Report,
+            "picker" => self.picker_open = true,
+            "nopicker" => self.picker_open = false,
+            "insets" => self.insets = [0.0, 32.0, 0.0, 24.0],
             "quickbench" => {
                 self.bench.size_mib = 256;
                 self.bench.secs = 1.0;
@@ -1165,4 +1477,148 @@ impl App {
     pub fn test_busy(&self) -> bool {
         self.bench.running || self.data.values().any(|d| d.loading) || self.devices.is_empty()
     }
+}
+
+fn attr_info(id: u32) -> (&'static str, bool) {
+    match id {
+        1 => ("Taxa de erros de leitura (Seagate: valor bruto empacotado, ignore)", false),
+        3 => ("Tempo para o motor atingir rotação", false),
+        4 => ("Ciclos de partida/parada", false),
+        5 => ("Setores realocados — degradação real da mídia", true),
+        7 => ("Erros de posicionamento (Seagate: valor bruto empacotado)", false),
+        9 => ("Horas ligado", false),
+        10 => ("Repetições de partida do motor — problema mecânico", true),
+        12 => ("Ciclos de energia", false),
+        170 | 180 => ("Blocos reserva disponíveis", false),
+        171 | 172 | 181 | 182 => ("Falhas de programação/apagamento da flash", true),
+        173 | 177 => ("Contador de nivelamento de desgaste", false),
+        174 | 192 => ("Desligamentos inesperados", false),
+        183 => ("Downshift de interface SATA", false),
+        184 => ("Erros fim-a-fim (cache/DRAM do disco)", true),
+        187 => ("Erros incorrigíveis reportados", true),
+        188 => ("Timeouts de comando (cabo/fonte)", false),
+        190 | 194 => ("Temperatura", false),
+        191 => ("Choques/vibração detectados", false),
+        193 => ("Ciclos de estacionamento das cabeças", false),
+        195 => ("Correções ECC por hardware", false),
+        196 => ("Eventos de realocação", false),
+        197 => ("Setores pendentes — instáveis agora", true),
+        198 => ("Incorrigíveis offline", true),
+        199 => ("Erros CRC de interface — cabo/porta, não o disco", false),
+        200 => ("Erros de escrita multi-zona", false),
+        202 | 231 | 233 | 169 => ("Vida útil / desgaste (normalizado = % restante)", false),
+        232 => ("Espaço reserva disponível", false),
+        241 => ("Total escrito pelo host", false),
+        242 => ("Total lido pelo host", false),
+        _ => ("", false),
+    }
+}
+
+fn health_color(a: &Assessment) -> Color32 {
+    match a.status {
+        Severity::Critical => RED,
+        Severity::Warning => ORANGE,
+        _ if a.health >= 90 => GREEN,
+        _ => YELLOW,
+    }
+}
+
+fn drive_icon(k: DriveKind) -> Icon {
+    match k {
+        DriveKind::Hdd => Icon::Disk,
+        DriveKind::Usb => Icon::Usb,
+        DriveKind::Nvme | DriveKind::SataSsd => Icon::Ssd,
+        _ => Icon::Chip,
+    }
+}
+
+fn gauge(ui: &mut egui::Ui, a: &Assessment, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    let p = ui.painter();
+    let c = rect.center();
+    let r = size * 0.40;
+    let col = health_color(a);
+    p.circle_filled(c, r + 12.0, col.gamma_multiply(0.07));
+    arc(p, c, r, 0.0, 1.0, Stroke::new(13.0, TRACK));
+    let frac = (a.health as f32 / 100.0).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        arc(p, c, r, 0.0, frac, Stroke::new(13.0, col));
+        for t in [0.0, frac] {
+            let ang = -std::f32::consts::FRAC_PI_2 + t * std::f32::consts::TAU;
+            p.circle_filled(c + Vec2::new(ang.cos(), ang.sin()) * r, 6.5, col);
+        }
+    }
+    p.text(c - Vec2::new(0.0, 6.0), egui::Align2::CENTER_CENTER, format!("{}%", a.health), egui::FontId::proportional(size * 0.21), TEXT);
+    p.text(c + Vec2::new(0.0, size * 0.15), egui::Align2::CENTER_CENTER, "SAÚDE", egui::FontId::proportional(11.0), MUTED);
+}
+
+fn life_bar(ui: &mut egui::Ui, l: u32) {
+    let w = ui.available_width().min(460.0);
+    ui.allocate_ui(Vec2::new(w, 34.0), |ui| {
+        ui.set_width(w);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Vida útil restante").color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(format!("{l}%")).strong());
+            });
+        });
+        let (r, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), egui::Sense::hover());
+        ui.painter().rect_filled(r, 5, TRACK);
+        let col = match l {
+            0..=10 => RED,
+            11..=30 => ORANGE,
+            _ => GREEN,
+        };
+        let mut f = r;
+        f.set_width((r.width() * l as f32 / 100.0).max(10.0));
+        ui.painter().rect_filled(f, 5, col);
+    });
+}
+
+fn bench_row(ui: &mut egui::Ui, name: &str, rd: Option<&TestResult>, wr: Option<&TestResult>, active: bool, mobile: bool) {
+    let stroke = if active { Stroke::new(1.5, ACCENT) } else { Stroke::new(1.0, BORDER) };
+    egui::Frame::new().fill(CARD).stroke(stroke).corner_radius(14).inner_margin(12).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let tile = |ui: &mut egui::Ui, r: Option<&TestResult>, color: Color32, w: f32| {
+            ui.vertical(|ui| {
+                ui.set_width(w);
+                match r {
+                    Some(r) => {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{:.1}", r.mbps)).size(if mobile { 23.0 } else { 26.0 }).strong().color(color));
+                            ui.label(RichText::new("MB/s").small().color(MUTED));
+                        });
+                        ui.label(RichText::new(format!("{:.0} IOPS · p99 {}", r.iops, fmt_us(r.lat_p99_us))).small().color(MUTED));
+                    }
+                    None => {
+                        ui.label(RichText::new("—").size(23.0).color(TRACK));
+                        ui.label(RichText::new(" ").small());
+                    }
+                }
+            });
+        };
+        if mobile {
+            ui.label(RichText::new(name).strong());
+            ui.add_space(2.0);
+            let w = (ui.available_width() - 12.0) / 2.0;
+            ui.horizontal(|ui| {
+                tile(ui, rd, BLUE, w);
+                tile(ui, wr, ORANGE, w);
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(170.0);
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(name).size(16.0).strong());
+                    if let Some(r) = rd {
+                        ui.label(RichText::new(format!("latência {}", fmt_us(r.lat_p50_us))).small().color(MUTED));
+                    }
+                });
+                let w = (ui.available_width() - 24.0) / 2.0;
+                tile(ui, rd, BLUE, w);
+                tile(ui, wr, ORANGE, w);
+            });
+        }
+    });
 }

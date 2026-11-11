@@ -20,7 +20,7 @@ pub struct UsbInfo {
 
 type JRes<T> = jni::errors::Result<T>;
 
-fn with_env<R>(f: impl FnOnce(&mut JNIEnv, &JObject) -> JRes<R>) -> io::Result<R> {
+pub(crate) fn with_env<R>(f: impl FnOnce(&mut JNIEnv, &JObject) -> JRes<R>) -> io::Result<R> {
     let ctx = ndk_context::android_context();
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| io::Error::other(format!("JNI: {e}")))?;
     let mut env = vm.attach_current_thread().map_err(|e| io::Error::other(format!("JNI: {e}")))?;
@@ -193,4 +193,23 @@ fn find<'a>(env: &mut JNIEnv<'a>, mgr: &JObject, name: &str) -> JRes<Option<JObj
         }
     }
     Ok(None)
+}
+
+/// Margens das barras do sistema (status, navegação, recorte) em pixels: [esq, topo, dir, base].
+pub fn system_insets_px() -> Option<[i32; 4]> {
+    with_env(|env, act| {
+        let win = env.call_method(act, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        let decor = env.call_method(&win, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let ins = env.call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?.l()?;
+        if ins.is_null() {
+            return Ok(None);
+        }
+        let mut v = [0i32; 4];
+        for (i, m) in ["getSystemWindowInsetLeft", "getSystemWindowInsetTop", "getSystemWindowInsetRight", "getSystemWindowInsetBottom"].iter().enumerate() {
+            v[i] = env.call_method(&ins, m, "()I", &[])?.i()?;
+        }
+        Ok(Some(v))
+    })
+    .ok()
+    .flatten()
 }
