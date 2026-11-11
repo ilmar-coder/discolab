@@ -29,7 +29,8 @@ jobs:
         run: |
           cargo install cargo-generate-rpm --locked
           strip target/release/discolab target/release/discolab-cli
-          cargo generate-rpm -p crates/app -o dist/
+          cargo generate-rpm -p crates/app
+          mkdir -p dist && cp target/generate-rpm/*.rpm dist/
           ls -la dist
       - name: Tarball
         run: |
