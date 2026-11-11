@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dependências Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - run: cargo test -p discolab-core
+      - run: cargo build --release -p discolab -p discolab-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discolab-${{ runner.os }}
+          path: |
+            target/release/discolab
+            target/release/discolab-cli
+            target/release/discolab.exe
+            target/release/discolab-cli.exe
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: cargo install cargo-apk --locked
+      - name: Gerar APK
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          # Chave temporária só para o CI (a chave de publicação fica fora do repositório).
+          PASS=$(openssl rand -hex 16)
+          keytool -genkeypair -keystore "$RUNNER_TEMP/ci.keystore" -alias discolab -keyalg RSA -keysize 2048 \
+            -validity 365 -storepass "$PASS" -keypass "$PASS" -dname "CN=DiscoLab CI"
+          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/ci.keystore" CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$PASS"
+          cargo apk build -p discolab --lib --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discolab-android
+          path: target/release/apk/*.apk

@@ -1,0 +1,57 @@
+[package]
+name = "discolab"
+version = "0.1.0"
+edition = "2024"
+description = "Teste de saúde, benchmark e superfície para HDD, SSD, NVMe, eMMC e UFS"
+
+[lib]
+# Nome diferente do binário evita colisão de .pdb no Windows.
+name = "discolab_app"
+# "cdylib" é o formato exigido pelo Android (libdiscolab_app.so dentro do APK).
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "discolab"
+path = "src/main.rs"
+
+[dependencies]
+discolab-core = { version = "0.1.0", path = "../core" }
+egui_plot = "0.38.0"
+serde_json = "1.0.154"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.37.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["android-native-activity", "wgpu", "default_fonts"] }
+winit = { version = "0.30", features = ["android-native-activity"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
+
+# ---- Empacotamento Android (cargo-apk) ----
+[package.metadata.android]
+package = "com.discolab.app"
+apk_name = "DiscoLab"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]
+strip = "strip"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "DiscoLab"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+orientation = "unspecified"
+
+[[package.metadata.android.uses_feature]]
+opengles_version = [3, 0]
+required = true
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.usb.host"
+required = false

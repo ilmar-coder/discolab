@@ -1,0 +1,8 @@
+[package]
+name = "discolab-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+discolab-core = { version = "0.1.0", path = "../core" }
+serde_json = "1.0.154"
