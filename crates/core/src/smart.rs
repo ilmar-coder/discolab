@@ -175,8 +175,32 @@ pub fn find_smartctl() -> Option<PathBuf> {
     ] {
         cands.push(Path::new(p).join(exe));
     }
-    cands.into_iter().find(|p| p.is_file())
+    cands.into_iter().find(|p| p.is_file()).or_else(embedded_smartctl)
 }
+
+/// Versão do smartctl embutida no executável (Windows), extraída para a pasta temporária.
+#[cfg(embedded_smartctl)]
+pub fn embedded_smartctl() -> Option<PathBuf> {
+    static BYTES: &[u8] = include_bytes!(env!("DISCOLAB_SMARTCTL_PATH"));
+    let dir = std::env::temp_dir().join("DiscoLab");
+    let path = dir.join(format!("smartctl-{}.exe", BYTES.len()));
+    let ok = std::fs::metadata(&path).map(|m| m.len() == BYTES.len() as u64).unwrap_or(false);
+    if !ok {
+        std::fs::create_dir_all(&dir).ok()?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, BYTES).ok()?;
+        std::fs::rename(&tmp, &path).ok()?;
+    }
+    Some(path)
+}
+
+#[cfg(not(embedded_smartctl))]
+pub fn embedded_smartctl() -> Option<PathBuf> {
+    None
+}
+
+/// Indica se este executável traz o smartctl embutido.
+pub const SMARTCTL_EMBEDDED: bool = cfg!(embedded_smartctl);
 
 pub fn read_smart(dev: &Device) -> SmartReport {
     if crate::usb::is_usb(&dev.smart_path) {

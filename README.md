@@ -36,7 +36,8 @@ Cada versão (tag `v*`) publica na página **Releases** do GitHub:
 
 | Sistema | Arquivo | Como usar |
 |---|---|---|
-| Windows | `DiscoLab-windows-x64.zip` | Extraia e abra `discolab.exe` (botão direito → Executar como administrador para SMART completo) |
+| Windows | `DiscoLab-portable.exe` | Um único arquivo, sem instalar nada: já traz o `smartctl` embutido e pede administrador ao abrir (ideal para pendrive) |
+| Windows | `DiscoLab-windows-x64.zip` | O mesmo programa + a CLI (`discolab-cli.exe`, também com smartctl embutido) |
 | Fedora / RHEL / openSUSE | `discolab-*.x86_64.rpm` | `sudo dnf install ./discolab-*.rpm` — menu "DiscoLab" com a ação "Abrir como administrador" |
 | Outras distros Linux | `discolab-linux-x86_64.tar.gz` | Extraia e rode `./discolab` |
 | macOS (Apple Silicon) | `DiscoLab-macos-arm64.zip` | Já inclui o `smartctl` |
@@ -54,7 +55,7 @@ testada que existe. O DiscoLab procura o `smartctl` no PATH, em locais comuns e 
 |---|---|---|
 | macOS | `brew install smartmontools` | SMART do SSD interno funciona sem sudo; superfície exige `sudo` |
 | Linux | `sudo apt install smartmontools` (ou dnf/pacman) | SMART e superfície exigem root |
-| Windows | instalador em smartmontools.org | Executar como Administrador |
+| Windows | já embutido no `DiscoLab-portable.exe` | O programa pede administrador ao abrir |
 | Android | — | Sem root: benchmark + eMMC/UFS (quando o sistema expõe). Com root: tudo |
 
 Sem `smartctl`, o app usa alternativas: contadores de confiabilidade do Windows (`Get-StorageReliabilityCounter`)

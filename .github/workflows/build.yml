@@ -46,6 +46,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Baixar e verificar o smartctl oficial (smartmontools 7.5)
+        shell: pwsh
+        run: |
+          $base = "https://github.com/smartmontools/smartmontools/releases/download/RELEASE_7_5"
+          $exe = "smartmontools-7.5.win32-setup.exe"
+          New-Item -ItemType Directory -Force -Path sm | Out-Null
+          Invoke-WebRequest "$base/$exe" -OutFile "sm/$exe"
+          Invoke-WebRequest "$base/$exe.md5" -OutFile "sm/$exe.md5"
+          $expected = ((Get-Content "sm/$exe.md5" -Raw).Trim() -split '\s+')[0].ToLower()
+          $actual = (Get-FileHash "sm/$exe" -Algorithm MD5).Hash.ToLower()
+          if ($expected -ne $actual) { throw "MD5 não confere: $actual != $expected" }
+          "SHA256: " + (Get-FileHash "sm/$exe" -Algorithm SHA256).Hash
+          7z x "sm/$exe" -osm/x -y | Out-Null
+          # Escolhe o smartctl.exe de 64 bits (máquina PE 0x8664).
+          $pick = $null
+          foreach ($f in Get-ChildItem sm/x -Recurse -Filter smartctl.exe) {
+            $b = [IO.File]::ReadAllBytes($f.FullName)
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            if ([BitConverter]::ToUInt16($b, $pe + 4) -eq 0x8664) { $pick = $f.FullName }
+          }
+          if (-not $pick) { throw "smartctl.exe de 64 bits não encontrado" }
+          Copy-Item $pick sm/smartctl.exe
+          & sm/smartctl.exe --version | Select-Object -First 1
+          $lic = Get-ChildItem sm/x -Recurse -Include COPYING*, LICENSE* | Select-Object -First 1
+          if ($lic) { Copy-Item $lic.FullName sm/smartmontools-LICENSE.txt }
+          "DISCOLAB_SMARTCTL=$((Resolve-Path sm/smartctl.exe).Path)" >> $env:GITHUB_ENV
       - run: cargo test -p discolab-core
       - run: cargo build --release -p discolab -p discolab-cli
       - name: Zip
@@ -53,6 +79,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path pkg/DiscoLab, dist | Out-Null
           Copy-Item target/release/discolab.exe, target/release/discolab-cli.exe, README.md pkg/DiscoLab/
+          if (Test-Path sm/smartmontools-LICENSE.txt) { Copy-Item sm/smartmontools-LICENSE.txt pkg/DiscoLab/ }
+          Set-Content pkg/DiscoLab/SMARTMONTOOLS.txt "Este DiscoLab traz embutido o smartctl 7.5 (smartmontools, GPL-2.0), sem modificações.`r`nCódigo-fonte: https://github.com/smartmontools/smartmontools/releases/tag/RELEASE_7_5"
+          # Executável único, para levar em pendrive
+          Copy-Item target/release/discolab.exe dist/DiscoLab-portable.exe
           Compress-Archive -Path pkg/DiscoLab -DestinationPath dist/DiscoLab-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -119,7 +149,7 @@ jobs:
           files: dist/*
           body: |
             **Downloads**
-            - **Windows:** `DiscoLab-windows-x64.zip` — extraia e execute `discolab.exe` (botão direito → *Executar como administrador* para SMART completo). Instale o [smartmontools](https://www.smartmontools.org/) para o SMART completo.
+            - **Windows:** `DiscoLab-portable.exe` — um único arquivo, sem instalar nada: já traz o smartctl embutido e pede administrador ao abrir. O `DiscoLab-windows-x64.zip` tem o mesmo programa mais a CLI.
             - **Linux (Fedora/openSUSE/RHEL):** `sudo dnf install ./discolab-*.x86_64.rpm` — no menu aparece "DiscoLab" e a ação "Abrir como administrador".
             - **Linux (outras):** `discolab-linux-x86_64.tar.gz`.
             - **macOS (Apple Silicon):** `DiscoLab-macos-arm64.zip` (com smartctl embutido).
