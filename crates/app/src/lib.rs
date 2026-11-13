@@ -1230,7 +1230,7 @@ impl App {
         }
         let v = self.volumes.get(self.bench.vol)?;
         let tmp = std::env::temp_dir();
-        let tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
+        let tmp = discolab_core::util::canonical(&tmp);
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
         let best = |root: &PathBuf| -> bool {
             self.volumes
@@ -1344,7 +1344,7 @@ impl App {
     /// Volume que contém o destino escolhido (para espaço livre e alertas).
     fn dest_volume(&self) -> Option<Volume> {
         let dir = self.bench_dir()?;
-        let dir = std::fs::canonicalize(&dir).or_else(|_| dir.parent().map(std::fs::canonicalize).unwrap_or(Ok(dir.clone()))).unwrap_or(dir);
+        let dir = discolab_core::util::canonical(&dir);
         self.volumes.iter().filter(|v| dir.starts_with(&v.mount)).max_by_key(|v| v.mount.as_os_str().len()).cloned()
     }
 
@@ -1746,7 +1746,7 @@ impl App {
         let cancel = b.cancel.clone();
         // Disco que contém a pasta do teste, para acompanhar a temperatura.
         let dir = cfg.dir.clone();
-        let dir = std::fs::canonicalize(&dir).or_else(|_| dir.parent().map(std::fs::canonicalize).unwrap_or(Ok(dir.clone()))).unwrap_or(dir);
+        let dir = discolab_core::util::canonical(&dir);
         let dev = self
             .devices
             .iter()

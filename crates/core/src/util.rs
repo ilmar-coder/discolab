@@ -91,3 +91,42 @@ fn check_elevated() -> bool {
         false
     }
 }
+
+/// Remove o prefixo "verbatim" do Windows (`\\?\C:\…` → `C:\…`, `\\?\UNC\srv` → `\\srv`),
+/// que o `canonicalize` adiciona e que impede comparar com pontos de montagem como `C:\`.
+pub fn strip_verbatim(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Caminho absoluto e resolvido, comparável com pontos de montagem em todos os sistemas.
+/// Se o caminho ainda não existe, resolve a pasta pai.
+pub fn canonical(p: &std::path::Path) -> std::path::PathBuf {
+    let resolved = std::fs::canonicalize(p).ok().or_else(|| {
+        let parent = std::fs::canonicalize(p.parent()?).ok()?;
+        Some(match p.file_name() {
+            Some(n) => parent.join(n),
+            None => parent,
+        })
+    });
+    match resolved {
+        Some(r) => std::path::PathBuf::from(strip_verbatim(&r.to_string_lossy())),
+        None => p.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn verbatim_paths() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\x\AppData\Local\Temp"), r"C:\Users\x\AppData\Local\Temp");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\pasta"), r"\\srv\share\pasta");
+        assert_eq!(strip_verbatim("/private/var/folders"), "/private/var/folders");
+    }
+}

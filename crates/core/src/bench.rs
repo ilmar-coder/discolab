@@ -124,7 +124,7 @@ pub enum BenchEvent {
 
 /// Espaço livre no volume que contém `dir`.
 pub fn free_space(dir: &Path) -> Option<u64> {
-    let dir = std::fs::canonicalize(dir).ok()?;
+    let dir = crate::util::canonical(dir);
     let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
     disks
         .iter()
