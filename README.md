@@ -10,7 +10,11 @@ HD Sentinel e CrystalDiskMark, com foco em resultados **honestos**.
 | **SMART** | Tabela completa de atributos ATA com explicação em português, log de saúde NVMe e desgaste eMMC/UFS |
 | **Benchmark** | SEQ 1M Q8/Q1 e RND 4K Q32/Q1 (leitura e escrita) com MB/s, IOPS e latência p50/p99/p99.9/máx, gráfico ao vivo e teste de **escrita sustentada** que mostra onde o cache SLC acaba |
 | **Superfície** | Varredura **somente leitura** com mapa de blocos colorido (estilo Victoria), curva de velocidade ao longo do disco (estilo HD Tune) e releitura dos blocos suspeitos |
-| **Relatório** | Texto pronto para copiar e salvar em `.txt` + `.json` |
+| **Capacidade real** | Detecta pendrives, cartões SD e SSDs falsificados (estilo H2testw): grava dados verificáveis no espaço livre e relê sem cache |
+| **Leitura direta** | Benchmark somente leitura direto no dispositivo — funciona em discos USB no Android sem root |
+| **Reparo de setores** | Após a varredura: regrava blocos lentos (sem perda) e força a realocação dos setores ilegíveis (zera só os setores mortos), com confirmação digitada |
+| **Relatório** | Página HTML para o cliente (gráficos, diagnóstico, cliente/técnico/observações, salvar em PDF), além de texto e JSON |
+| **Extras** | Tema claro/escuro, temperatura durante o benchmark, vida útil pelo TBW do fabricante, aviso de nova versão (Windows se atualiza sozinho) |
 
 ## Por que os resultados são mais confiáveis
 
@@ -32,7 +36,8 @@ HD Sentinel e CrystalDiskMark, com foco em resultados **honestos**.
 
 ## Downloads
 
-Cada versão (tag `v*`) publica na página **Releases** do GitHub:
+Cada versão (tag `v*`) publica na página **Releases** do GitHub. O app avisa quando há versão nova
+(requer que as Releases sejam públicas; no Windows a atualização é automática, com verificação SHA-256):
 
 | Sistema | Arquivo | Como usar |
 |---|---|---|
@@ -85,6 +90,9 @@ discolab-cli health sda --json
 discolab-cli bench /mnt/dados --size 1024 --secs 5 --sustained 16
 sudo discolab-cli scan sda --start 0 --end 100 --block 128
 discolab-cli selftest sda short
+discolab-cli report sda --client "Cliente" --tech "Técnico"   # relatório HTML
+discolab-cli capacity /media/pendrive                          # teste de capacidade real
+discolab-cli update                                             # verifica versão nova
 ```
 
 ### Android
@@ -129,6 +137,9 @@ Testes: `cargo test -p discolab-core` · capturas da interface:
 
 ## Segurança dos dados
 
-- A varredura de superfície é **somente leitura**. Não há teste destrutivo de escrita no disco bruto.
+- A varredura de superfície é **somente leitura**.
+- O **reparo de setores** é a única função que grava no disco bruto: só atua nos blocos que a varredura apontou,
+  exige confirmação digitada e fica bloqueado no disco do sistema em uso.
+- O teste de capacidade usa apenas o espaço livre (deixa 5 GB livres no disco do sistema).
 - O benchmark escreve apenas arquivos temporários na pasta escolhida e os apaga ao final (inclusive se cancelado).
 - Escrita sustentada grande consome ciclos de escrita do SSD; use com moderação (8–32 GiB costuma bastar).

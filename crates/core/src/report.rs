@@ -38,6 +38,11 @@ pub fn text_report(
         }
         if let Some(x) = sm.host_written_bytes {
             let _ = writeln!(s, "Total escrito: {}", human_bytes(x));
+            let cap = sm.capacity.unwrap_or(dev.size_bytes);
+            if let Some(tbw) = crate::endurance::rated_tbw(sm.model.as_deref().unwrap_or(&dev.model), cap) {
+                let left = crate::endurance::life_left_by_tbw(x, tbw).unwrap_or(0);
+                let _ = writeln!(s, "Resistência  : {tbw} TBW (garantia) — {left}% restante pelo volume escrito");
+            }
         }
         let _ = writeln!(s, "Fonte SMART : {}", sm.source.label());
     }
@@ -83,6 +88,11 @@ pub fn text_report(
                 }
             }
         }
+        if !b.temperatures.is_empty() {
+            let max = b.temperatures.iter().map(|t| t.1).fold(f64::MIN, f64::max);
+            let min = b.temperatures.iter().map(|t| t.1).fold(f64::MAX, f64::min);
+            let _ = writeln!(s, "  Temperatura durante o teste: {min:.0} a {max:.0} °C");
+        }
         for w in &b.warnings {
             let _ = writeln!(s, "  Aviso: {w}");
         }
@@ -120,4 +130,60 @@ pub fn save_report(dev: &Device, text: &str, json: &serde_json::Value) -> std::i
     std::fs::write(&p, text)?;
     std::fs::write(p.with_extension("json"), serde_json::to_string_pretty(json).unwrap_or_default())?;
     Ok(p)
+}
+
+/// Data/hora local formatada (para relatórios).
+pub fn now_string() -> String {
+    chrono::Local::now().format("%d/%m/%Y %H:%M").to_string()
+}
+
+fn safe_name(dev: &Device) -> String {
+    let base: String = dev.model.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    format!("{base}_{}", chrono::Local::now().format("%Y%m%d_%H%M"))
+}
+
+/// Salva o relatório HTML e abre no navegador / visualizador do sistema.
+/// Retorna a descrição de onde ficou salvo.
+pub fn save_and_open_html(dev: &Device, html: &str) -> Result<String, String> {
+    let name = format!("{}.html", safe_name(dev));
+    #[cfg(target_os = "android")]
+    {
+        return crate::usb::android::save_to_downloads_and_open(&name, "text/html", html.as_bytes());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = reports_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let p = dir.join(name);
+        std::fs::write(&p, html).map_err(|e| e.to_string())?;
+        open_with_system(&p);
+        Ok(p.display().to_string())
+    }
+}
+
+/// Abre um endereço (https://…) no navegador do sistema.
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "android")]
+    crate::usb::android::open_url(url);
+    #[cfg(not(target_os = "android"))]
+    open_with_system(std::path::Path::new(url));
+}
+
+#[allow(dead_code)]
+fn open_with_system(p: &std::path::Path) {
+    let mut c = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(p);
+        c
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]).arg(p);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(p);
+        c
+    };
+    crate::util::hide_window(&mut c);
+    let _ = c.spawn();
 }

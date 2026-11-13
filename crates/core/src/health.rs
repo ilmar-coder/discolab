@@ -135,7 +135,7 @@ pub fn assess(dev: &Device, s: &SmartReport, scan: Option<&ScanSummary>) -> Asse
                 Severity::Critical,
                 if a.prefailure { 45.0 } else { 15.0 },
                 format!("Atributo {} ({}) abaixo do limite", a.id, a.name),
-                format!("Valor {} ≤ limite {}. O fabricante considera este atributo em falha.", a.value, a.thresh),
+                format!("Valor {} abaixo ou igual ao limite {}. O fabricante considera este atributo em falha.", a.value, a.thresh),
             );
         } else if a.when_failed == "past" && a.prefailure {
             c.add(

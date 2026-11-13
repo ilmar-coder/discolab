@@ -40,8 +40,15 @@ fn screenshots() {
     hs.state_mut().test_hook("quickbench");
     wait(&mut hs);
     shot(&mut hs, "bench");
-    for tab in ["surface", "report"] {
+    eprintln!("TEMPS {:?}", hs.state().test_temps());
+    for tab in ["surface", "report", "capacity"] {
         hs.state_mut().test_hook(tab);
         shot(&mut hs, tab);
+    }
+    hs.state_mut().test_hook("perf");
+    hs.state_mut().test_hook("light");
+    for tab in ["health", "bench"] {
+        hs.state_mut().test_hook(tab);
+        shot(&mut hs, &format!("{tab}_claro"));
     }
 }

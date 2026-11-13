@@ -10,7 +10,7 @@ pub mod android;
 
 use crate::device::Device;
 use crate::smart::{SmartReport, SmartSource, parse_smartctl};
-use crate::surface::BlockRead;
+use crate::surface::{BlockRead, BlockRw};
 use std::io;
 
 pub const PREFIX: &str = "usb:";
@@ -125,6 +125,33 @@ mod session {
             }
             r
         }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl BlockRw for session::UsbBlock {
+    fn write_at(&mut self, buf: &[u8], off: u64) -> io::Result<()> {
+        self.s.lock().unwrap().write_bytes(buf, off, 30_000)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.s.lock().unwrap().sync_cache()
+    }
+}
+
+pub fn open_block_rw(path: &str) -> io::Result<Box<dyn BlockRw>> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let s = session::open(path)?;
+        let (size, bs) = {
+            let g = s.lock().unwrap();
+            (g.size_bytes(), g.block_size as usize)
+        };
+        Ok(Box::new(session::UsbBlock { s, path: path.to_string(), size, bs }))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = path;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "acesso USB direto disponível apenas no Linux/Android"))
     }
 }
 

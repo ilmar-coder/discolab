@@ -170,6 +170,40 @@ impl<T: Transport> Scsi<T> {
         Ok(())
     }
 
+    /// Escreve `buf` a partir de `off` (múltiplos do bloco lógico) e sincroniza o cache.
+    pub fn write_bytes(&mut self, buf: &[u8], off: u64, timeout_ms: u32) -> io::Result<()> {
+        let bs = self.block_size as u64;
+        if off % bs != 0 || buf.len() as u64 % bs != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "escrita desalinhada"));
+        }
+        let lba = off / bs;
+        let count = buf.len() as u64 / bs;
+        let cdb: Vec<u8> = if lba + count <= u32::MAX as u64 && count <= 0xFFFF {
+            let mut c = vec![0x2A, 0];
+            c.extend_from_slice(&(lba as u32).to_be_bytes());
+            c.push(0);
+            c.extend_from_slice(&(count as u16).to_be_bytes());
+            c.push(0);
+            c
+        } else {
+            let mut c = vec![0x8A, 0];
+            c.extend_from_slice(&lba.to_be_bytes());
+            c.extend_from_slice(&(count as u32).to_be_bytes());
+            c.extend_from_slice(&[0, 0]);
+            c
+        };
+        let r = self.bot.cmd(&cdb, Dir::Out(buf), timeout_ms)?;
+        if !r.ok() || r.transferred < buf.len() {
+            return Err(io::Error::other(format!("erro de escrita no LBA {lba}")));
+        }
+        Ok(())
+    }
+
+    pub fn sync_cache(&mut self) -> io::Result<()> {
+        let r = self.bot.cmd(&[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0], Dir::None, 60_000)?;
+        if r.ok() { Ok(()) } else { Err(io::Error::other("SYNCHRONIZE CACHE falhou")) }
+    }
+
     // ------------------------------------------------------------- ATA (SAT)
 
     fn ata_cdb(kind: AtaPt, cmd: u8, feature: u8, count: u8, lba_low: u8, lba_mid: u8, lba_high: u8) -> Vec<u8> {

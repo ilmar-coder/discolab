@@ -72,6 +72,8 @@ pub struct ScanSummary {
     pub scanned_bytes: u64,
     pub cancelled: bool,
     pub uncached: bool,
+    #[serde(default)]
+    pub block_size: u64,
 }
 
 pub fn bucket_of(ms: f64) -> u8 {
@@ -93,10 +95,37 @@ pub trait BlockRead: Send {
     }
 }
 
+/// Leitura + escrita (usado só pelo reparo de setores).
+pub trait BlockRw: BlockRead {
+    fn write_at(&mut self, buf: &[u8], off: u64) -> std::io::Result<()>;
+    fn flush(&mut self) -> std::io::Result<()>;
+}
+
 struct FileDev {
     f: std::fs::File,
     size: u64,
     uncached: bool,
+}
+
+impl BlockRw for FileDev {
+    fn write_at(&mut self, buf: &[u8], off: u64) -> std::io::Result<()> {
+        directio::write_full(&self.f, buf, off)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.f.sync_all()
+    }
+}
+
+/// Abre o dispositivo para leitura e escrita (reparo). Exige privilégios e, em geral,
+/// que o disco não esteja montado.
+pub fn open_source_rw(path: &std::path::Path, size_hint: u64) -> Result<Box<dyn BlockRw>, String> {
+    let p = path.to_string_lossy();
+    if crate::usb::is_usb(&p) {
+        return crate::usb::open_block_rw(&p).map_err(|e| format!("Não foi possível abrir o dispositivo USB: {e}"));
+    }
+    let o = directio::open(path, true, false, true).map_err(|e| format!("Não foi possível abrir {} para escrita: {e}", path.display()))?;
+    let size = directio::device_size(&o.file).filter(|s| *s > 0).unwrap_or(size_hint);
+    Ok(Box::new(FileDev { f: o.file, size, uncached: o.uncached }))
 }
 
 impl BlockRead for FileDev {
@@ -150,7 +179,7 @@ pub fn scan_source(src: &mut dyn BlockRead, cfg: &ScanConfig, cancel: &AtomicBoo
     }
 
     let mut buf = AlignedBuf::new(bs as usize);
-    let mut sum = ScanSummary { uncached, min_mbps: f64::MAX, ..Default::default() };
+    let mut sum = ScanSummary { uncached, block_size: bs, min_mbps: f64::MAX, ..Default::default() };
     let mut cell_worst = vec![u8::MAX; MAP_CELLS];
     let blocks_per_cell = ((last - first) as f64 / MAP_CELLS as f64).max(1.0);
     let mut suspects: Vec<(u64, u8, String)> = Vec::new();

@@ -40,6 +40,8 @@ struct Mock {
     stall_next: bool,
     jm_cmd: Option<Vec<u8>>,
     pub cmds: Vec<u8>,
+    pub writes: Vec<(u64, u64)>,
+    pub sector_reads: Vec<u64>,
 }
 
 fn swap_str(id: &mut [u8], w0: usize, w1: usize, s: &str) {
@@ -74,6 +76,8 @@ impl Mock {
             stall_next: false,
             jm_cmd: None,
             cmds: vec![],
+            writes: vec![],
+            sector_reads: vec![],
         }
     }
 
@@ -168,6 +172,9 @@ impl Mock {
             0x28 => {
                 let lba = u32::from_be_bytes(cdb[2..6].try_into().unwrap()) as u64;
                 let n = u16::from_be_bytes(cdb[7..9].try_into().unwrap()) as u64;
+                if n == 1 {
+                    self.sector_reads.push(lba);
+                }
                 if let Some((a, b)) = self.bad_lba {
                     if lba < b && lba + n > a {
                         // setor ilegível: sem dados, CSW com falha
@@ -206,6 +213,19 @@ impl Mock {
                     }
                 };
             }
+            0x2A => {
+                let lba = u32::from_be_bytes(cdb[2..6].try_into().unwrap()) as u64;
+                let n = u16::from_be_bytes(cdb[7..9].try_into().unwrap()) as u64;
+                self.writes.push((lba, n));
+                // gravar sobre o setor defeituoso faz o "disco" realocá-lo
+                if let Some((a, b)) = self.bad_lba {
+                    if lba < b && lba + n > a {
+                        self.bad_lba = None;
+                    }
+                }
+                self.expect_out = 0;
+            }
+            0x35 => {}
             0xE4 if self.kind == Kind::NvmeRealtek => {
                 self.data = if cdb[3] == 0x02 { Self::nvme_log() } else { Self::nvme_id() };
             }
@@ -386,6 +406,14 @@ fn adapter_without_passthrough_still_reports_capacity() {
 }
 
 struct MockBlock(Scsi<Mock>);
+impl discolab_core::surface::BlockRw for MockBlock {
+    fn write_at(&mut self, buf: &[u8], off: u64) -> io::Result<()> {
+        self.0.write_bytes(buf, off, 1000)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.sync_cache()
+    }
+}
 impl BlockRead for MockBlock {
     fn size(&self) -> u64 {
         self.0.size_bytes()
@@ -420,4 +448,49 @@ fn surface_scan_over_usb_finds_bad_sectors() {
     assert_eq!(s.buckets.iter().sum::<u64>(), 64);
     assert_eq!(s.bad_blocks, 1);
     assert_eq!(s.errors[0].0, (3000 * 512 / 65536) * 65536);
+}
+
+#[test]
+fn raw_read_benchmark_over_usb() {
+    use discolab_core::bench::{BenchEvent, run_raw_read};
+    let mut m = Mock::new(Kind::Sat16);
+    m.blocks = 400_000; // ~200 MB
+    let mut blk = MockBlock(scsi(m, 0x152D));
+    let mut rep = None;
+    run_raw_read(&mut blk, 1.0, &AtomicBool::new(false), &mut |e| {
+        if let BenchEvent::Done(r) = e {
+            rep = Some(r)
+        }
+    });
+    let r = rep.unwrap();
+    assert_eq!(r.results.len(), 4, "{:?}", r.warnings);
+    assert!(r.results.iter().all(|t| t.mbps > 0.0 && t.ops > 0));
+}
+
+#[test]
+fn repair_zeroes_only_dead_sector_and_remaps() {
+    use discolab_core::repair::{RepairEvent, RepairTarget, run_repair};
+    let mut m = Mock::new(Kind::Sat16);
+    m.blocks = 8192;
+    m.bad_lba = Some((3000, 3001));
+    m.stall_unsupported = false;
+    let mut blk = MockBlock(scsi(m, 0x152D));
+    let block = 64 * 1024u64;
+    let off = 3000 * 512 / block * block;
+    let targets = [RepairTarget { offset: off, len: block, unreadable: true }];
+    let mut res = None;
+    run_repair(&mut blk, &targets, 200, &AtomicBool::new(false), &mut |e| {
+        if let RepairEvent::Done(r) = e {
+            res = Some(r)
+        }
+    });
+    let r = res.unwrap();
+    assert_eq!(r.rewritten_blocks, 1);
+    assert_eq!(r.zeroed_sectors, 1, "só o setor morto");
+    assert_eq!(r.lost_bytes, 512);
+    assert_eq!(r.fixed, 1, "{r:?}");
+    let t = &blk.0.bot.t;
+    assert_eq!(t.writes, vec![(off / 512, block / 512)]);
+    assert_eq!(t.sector_reads.len(), 127 + 3, "127 vizinhos lidos uma vez + 3 tentativas no setor morto");
+    assert!(t.bad_lba.is_none());
 }

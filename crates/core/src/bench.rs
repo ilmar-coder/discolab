@@ -105,6 +105,9 @@ pub struct BenchReport {
     pub sustained: Option<SustainedResult>,
     pub warnings: Vec<String>,
     pub cancelled: bool,
+    /// (segundos desde o início, °C) — preenchido pela interface durante o teste.
+    #[serde(default)]
+    pub temperatures: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -468,4 +471,93 @@ pub fn analyze_sustained(curve: Vec<(f64, f64)>, written: u64) -> SustainedResul
         cache_estimate_bytes: cache,
         curve,
     }
+}
+
+// ---------------------------------------------------------------- leitura direta
+
+/// Testes do benchmark de leitura direta (disco bruto, somente leitura, fila 1).
+pub fn raw_tests() -> Vec<TestSpec> {
+    vec![
+        TestSpec::new("SEQ 1M Q1 Leitura", false, false, 1 << 20, 1),
+        TestSpec::new("SEQ 128K Q1 Leitura", false, false, 128 << 10, 1),
+        TestSpec::new("RND 64K Q1 Leitura", false, true, 64 << 10, 1),
+        TestSpec::new("RND 4K Q1 Leitura", false, true, 4096, 1),
+    ]
+}
+
+/// Benchmark somente leitura direto no dispositivo (sem sistema de arquivos).
+/// Serve para discos USB acessados diretamente (Android sem root) e discos brutos.
+pub fn run_raw_read(src: &mut dyn crate::surface::BlockRead, seconds: f32, cancel: &AtomicBool, emit: &mut dyn FnMut(BenchEvent)) {
+    let size = src.size();
+    let align = src.align().max(512);
+    let mut report = BenchReport { dir: "leitura direta do dispositivo".into(), uncached: src.uncached(), ..Default::default() };
+    if size < (64 << 20) {
+        emit(BenchEvent::Failed("Dispositivo pequeno demais para o teste.".into()));
+        return;
+    }
+    let tests = raw_tests();
+    let mut rng = Rng::seeded();
+    for (i, t) in tests.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            report.cancelled = true;
+            break;
+        }
+        emit(BenchEvent::Phase(format!("{} ({}/{})", t.name, i + 1, tests.len())));
+        let block = t.block.div_ceil(align) * align;
+        let blocks = size / block as u64;
+        let mut buf = AlignedBuf::new(block);
+        let mut lats: Vec<u32> = Vec::new();
+        let start = Instant::now();
+        let dur = Duration::from_secs_f32(seconds.max(1.0));
+        let mut bytes = 0u64;
+        let mut last_b = 0u64;
+        let mut last_t = Instant::now();
+        // sequencial começa no meio do disco (região típica de dados)
+        let mut cursor = blocks / 4;
+        let mut err = None;
+        while start.elapsed() < dur && !cancel.load(Ordering::Relaxed) {
+            let b = if t.random { rng.next() % blocks } else { cursor };
+            cursor = (cursor + 1) % blocks;
+            let t0 = Instant::now();
+            if let Err(e) = src.read_at(&mut buf, b * block as u64) {
+                err = Some(e);
+                break;
+            }
+            lats.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
+            bytes += block as u64;
+            if last_t.elapsed() >= Duration::from_millis(250) {
+                let dt = last_t.elapsed().as_secs_f64();
+                emit(BenchEvent::Sample { test: i, t: start.elapsed().as_secs_f32(), mbps: (bytes - last_b) as f64 / dt / 1e6 });
+                last_b = bytes;
+                last_t = Instant::now();
+            }
+        }
+        if let Some(e) = err {
+            let w = format!("{}: erro de leitura ({e})", t.name);
+            emit(BenchEvent::Warning(w.clone()));
+            report.warnings.push(w);
+            continue;
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        lats.sort_unstable();
+        let ops = lats.len() as u64;
+        let avg = if lats.is_empty() { 0.0 } else { lats.iter().map(|&x| x as f64).sum::<f64>() / lats.len() as f64 };
+        let r = TestResult {
+            name: t.name.clone(),
+            mbps: bytes as f64 / elapsed / 1e6,
+            iops: ops as f64 / elapsed,
+            lat_avg_us: avg,
+            lat_p50_us: percentile(&lats, 0.5),
+            lat_p99_us: percentile(&lats, 0.99),
+            lat_p999_us: percentile(&lats, 0.999),
+            lat_max_us: lats.last().copied().unwrap_or(0),
+            uncached: report.uncached,
+            ops,
+        };
+        emit(BenchEvent::TestDone(i, r.clone()));
+        report.results.push(r);
+        emit(BenchEvent::Progress((i + 1) as f32 / tests.len() as f32));
+    }
+    report.cancelled |= cancel.load(Ordering::Relaxed);
+    emit(BenchEvent::Done(report));
 }

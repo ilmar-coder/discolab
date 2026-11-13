@@ -234,3 +234,56 @@ pub fn bar_heights_px() -> Result<(i32, i32), String> {
     })
     .map_err(|e| e.to_string())
 }
+
+/// Salva um arquivo em Downloads/DiscoLab (MediaStore, Android 10+) e abre no visualizador.
+/// Retorna onde o arquivo ficou.
+pub fn save_to_downloads_and_open(name: &str, mime: &str, bytes: &[u8]) -> Result<String, String> {
+    with_env(|env, act| {
+        let sdk = env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()?;
+        let resolver = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
+        let uri = if sdk >= 29 {
+            let cv = env.new_object("android/content/ContentValues", "()V", &[])?;
+            for (k, v) in [("_display_name", name), ("mime_type", mime), ("relative_path", "Download/DiscoLab")] {
+                let k = env.new_string(k)?;
+                let v = env.new_string(v)?;
+                env.call_method(&cv, "put", "(Ljava/lang/String;Ljava/lang/String;)V", &[JValue::Object(&k), JValue::Object(&v)])?;
+            }
+            let coll = env.get_static_field("android/provider/MediaStore$Downloads", "EXTERNAL_CONTENT_URI", "Landroid/net/Uri;")?.l()?;
+            env.call_method(&resolver, "insert", "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;", &[JValue::Object(&coll), JValue::Object(&cv)])?.l()?
+        } else {
+            JObject::null()
+        };
+        if uri.is_null() {
+            return Ok(None);
+        }
+        let os = env.call_method(&resolver, "openOutputStream", "(Landroid/net/Uri;)Ljava/io/OutputStream;", &[JValue::Object(&uri)])?.l()?;
+        let arr = env.byte_array_from_slice(bytes)?;
+        env.call_method(&os, "write", "([B)V", &[JValue::Object(&arr)])?;
+        env.call_method(&os, "close", "()V", &[])?;
+        // abre no navegador / visualizador
+        let action = env.new_string("android.intent.action.VIEW")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+        let m = env.new_string(mime)?;
+        env.call_method(&intent, "setDataAndType", "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&uri), JValue::Object(&m)])?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x0000_0001 | 0x1000_0000)])?;
+        if env.call_method(act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)]).is_err() {
+            let _ = env.exception_clear();
+        }
+        Ok(Some(format!("Downloads/DiscoLab/{name}")))
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Este Android não permite salvar em Downloads (requer Android 10+).".to_string())
+}
+
+/// Abre um endereço no navegador.
+pub fn open_url(url: &str) {
+    let _ = with_env(|env, act| {
+        let u = env.new_string(url)?;
+        let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&u)])?.l()?;
+        let action = env.new_string("android.intent.action.VIEW")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[JValue::Object(&action), JValue::Object(&uri)])?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?;
+        env.call_method(act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        Ok(())
+    });
+}

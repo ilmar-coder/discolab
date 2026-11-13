@@ -1,6 +1,6 @@
 [package]
 name = "discolab"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Teste de saúde, benchmark e superfície para HDD, SSD, NVMe, eMMC e UFS"
 
@@ -15,7 +15,7 @@ name = "discolab"
 path = "src/main.rs"
 
 [dependencies]
-discolab-core = { version = "0.1.1", path = "../core" }
+discolab-core = { version = "0.2.0", path = "../core" }
 egui_plot = "0.38.0"
 serde_json = "1.0.154"
 

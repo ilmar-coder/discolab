@@ -412,6 +412,20 @@ pub fn parse_smartctl(v: Value) -> SmartReport {
     r
 }
 
+/// Leitura rápida só da temperatura (para acompanhar durante testes).
+pub fn read_temperature(dev: &Device) -> Option<i64> {
+    if dev.smart_path.is_empty() || crate::usb::is_usb(&dev.smart_path) {
+        return None;
+    }
+    let sc = find_smartctl()?;
+    let mut cmd = Command::new(sc);
+    cmd.args(["-A", "-j", &dev.smart_path]);
+    hide_window(&mut cmd);
+    let out = cmd.output().ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    v["temperature"]["current"].as_i64().or_else(|| v["nvme_smart_health_information_log"]["temperature"].as_i64())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum SelfTest {
     Short,

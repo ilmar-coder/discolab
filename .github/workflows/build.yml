@@ -57,7 +57,9 @@ jobs:
           $expected = ((Get-Content "sm/$exe.md5" -Raw).Trim() -split '\s+')[0].ToLower()
           $actual = (Get-FileHash "sm/$exe" -Algorithm MD5).Hash.ToLower()
           if ($expected -ne $actual) { throw "MD5 não confere: $actual != $expected" }
-          "SHA256: " + (Get-FileHash "sm/$exe" -Algorithm SHA256).Hash
+          # SHA-256 fixado do instalador oficial 7.5 (verificado na v0.1.1).
+          $sha = (Get-FileHash "sm/$exe" -Algorithm SHA256).Hash.ToUpper()
+          if ($sha -ne "896337FCC253220614CF8CDBD5CF2321C5AA326A37A04160A672A281E6104C70") { throw "SHA-256 inesperado: $sha" }
           7z x "sm/$exe" -osm/x -y | Out-Null
           # Escolhe o smartctl.exe de 64 bits (máquina PE 0x8664).
           $pick = $null

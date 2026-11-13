@@ -2,53 +2,89 @@
 //! porque as fontes embutidas (e as do Android) não têm emojis/símbolos.
 
 use discolab_core::health::Severity;
+use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui::{self, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Shape, Stroke, TextStyle, Vec2, pos2, vec2};
 
-pub const BG: Color32 = Color32::from_rgb(13, 15, 20);
-pub const PANEL: Color32 = Color32::from_rgb(19, 22, 29);
-pub const CARD: Color32 = Color32::from_rgb(25, 29, 38);
-pub const CARD_HI: Color32 = Color32::from_rgb(33, 38, 50);
-pub const BORDER: Color32 = Color32::from_rgb(40, 46, 60);
-pub const TRACK: Color32 = Color32::from_rgb(48, 54, 70);
-pub const TEXT: Color32 = Color32::from_rgb(230, 234, 242);
-pub const MUTED: Color32 = Color32::from_rgb(140, 148, 166);
-pub const ACCENT: Color32 = Color32::from_rgb(64, 196, 255);
-pub const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
-pub const YELLOW: Color32 = Color32::from_rgb(250, 204, 21);
-pub const ORANGE: Color32 = Color32::from_rgb(251, 146, 60);
-pub const RED: Color32 = Color32::from_rgb(248, 87, 87);
-pub const BLUE: Color32 = Color32::from_rgb(96, 165, 250);
+static DARK: AtomicBool = AtomicBool::new(true);
+
+pub fn is_dark() -> bool {
+    DARK.load(Ordering::Relaxed)
+}
+pub fn set_dark(d: bool) {
+    DARK.store(d, Ordering::Relaxed);
+}
+
+macro_rules! palette {
+    ($($name:ident: $d:expr, $l:expr;)*) => {
+        $(
+            #[allow(non_snake_case)]
+            #[inline]
+            pub fn $name() -> Color32 {
+                let (r, g, b) = if is_dark() { $d } else { $l };
+                Color32::from_rgb(r, g, b)
+            }
+        )*
+    };
+}
+
+palette! {
+    BG: (13, 15, 20), (241, 244, 249);
+    PANEL: (19, 22, 29), (255, 255, 255);
+    CARD: (25, 29, 38), (255, 255, 255);
+    CARD_HI: (33, 38, 50), (233, 237, 244);
+    BORDER: (40, 46, 60), (219, 224, 233);
+    TRACK: (48, 54, 70), (212, 218, 228);
+    TEXT: (230, 234, 242), (22, 27, 38);
+    MUTED: (140, 148, 166), (95, 104, 122);
+    ACCENT: (64, 196, 255), (0, 120, 212);
+    GREEN: (52, 211, 153), (14, 150, 98);
+    YELLOW: (250, 204, 21), (176, 128, 0);
+    ORANGE: (251, 146, 60), (212, 104, 16);
+    RED: (248, 87, 87), (208, 48, 48);
+    BLUE: (96, 165, 250), (37, 99, 235);
+}
+
+/// Cor usada para "recortar" a lua (igual ao fundo dos botões).
+#[allow(non_snake_case)]
+fn BG_FOR_MOON() -> Color32 {
+    CARD()
+}
 
 pub fn apply_theme(ctx: &egui::Context, mobile: bool) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = PANEL;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    let dark = is_dark();
+    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = BG();
+    v.window_fill = PANEL();
+    v.window_stroke = Stroke::new(1.0, BORDER());
     v.window_corner_radius = CornerRadius::same(18);
     v.menu_corner_radius = CornerRadius::same(12);
-    v.extreme_bg_color = Color32::from_rgb(10, 12, 16);
-    v.faint_bg_color = CARD_HI;
-    v.code_bg_color = CARD_HI;
-    v.selection.bg_fill = ACCENT.gamma_multiply(0.45);
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
-    v.hyperlink_color = ACCENT;
+    v.extreme_bg_color = if dark { Color32::from_rgb(10, 12, 16) } else { Color32::from_rgb(248, 250, 252) };
+    v.faint_bg_color = CARD_HI();
+    v.code_bg_color = CARD_HI();
+    v.selection.bg_fill = ACCENT().gamma_multiply(0.45);
+    v.selection.stroke = Stroke::new(1.0, ACCENT());
+    v.hyperlink_color = ACCENT();
     v.override_text_color = None;
     v.slider_trailing_fill = true;
     for (w, fill) in [
-        (&mut v.widgets.noninteractive, CARD),
-        (&mut v.widgets.inactive, CARD_HI),
-        (&mut v.widgets.hovered, Color32::from_rgb(42, 49, 64)),
-        (&mut v.widgets.active, Color32::from_rgb(50, 58, 76)),
-        (&mut v.widgets.open, Color32::from_rgb(42, 49, 64)),
+        (&mut v.widgets.noninteractive, CARD()),
+        (&mut v.widgets.inactive, CARD_HI()),
+        (&mut v.widgets.hovered, if dark { Color32::from_rgb(42, 49, 64) } else { Color32::from_rgb(222, 228, 238) }),
+        (&mut v.widgets.active, if dark { Color32::from_rgb(50, 58, 76) } else { Color32::from_rgb(210, 218, 232) }),
+        (&mut v.widgets.open, if dark { Color32::from_rgb(42, 49, 64) } else { Color32::from_rgb(222, 228, 238) }),
     ] {
         w.corner_radius = CornerRadius::same(10);
         w.bg_fill = fill;
         w.weak_bg_fill = fill;
     }
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT.gamma_multiply(0.6));
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER());
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT());
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT());
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT().gamma_multiply(0.6));
+    v.widgets.hovered.fg_stroke = Stroke::new(1.5, TEXT());
+    v.widgets.active.fg_stroke = Stroke::new(1.5, TEXT());
+    v.widgets.open.fg_stroke = Stroke::new(1.0, TEXT());
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
         let k = if mobile { 1.08 } else { 1.0 };
@@ -69,8 +105,8 @@ pub fn apply_theme(ctx: &egui::Context, mobile: bool) {
 
 pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(CARD())
+        .stroke(Stroke::new(1.0, BORDER()))
         .corner_radius(16)
         .inner_margin(16)
         .show(ui, |ui| {
@@ -82,7 +118,7 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 
 pub fn section_title(ui: &mut egui::Ui, t: &str) {
     ui.add_space(2.0);
-    ui.label(RichText::new(t.to_uppercase()).small().strong().color(MUTED));
+    ui.label(RichText::new(t.to_uppercase()).small().strong().color(MUTED()));
     ui.add_space(4.0);
 }
 
@@ -99,7 +135,7 @@ pub fn pill(ui: &mut egui::Ui, t: &str, c: Color32) {
 pub fn legend_dot(ui: &mut egui::Ui, c: Color32, t: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
     ui.painter().circle_filled(r.center(), 4.5, c);
-    ui.label(RichText::new(t).small().color(MUTED));
+    ui.label(RichText::new(t).small().color(MUTED()));
 }
 
 pub fn stat_grid(ui: &mut egui::Ui, tiles: &[(&str, String, Color32)], cols: usize) {
@@ -110,14 +146,14 @@ pub fn stat_grid(ui: &mut egui::Ui, tiles: &[(&str, String, Color32)], cols: usi
             ui.spacing_mut().item_spacing.x = gap;
             for (label, value, color) in row {
                 egui::Frame::new()
-                    .fill(CARD)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(CARD())
+                    .stroke(Stroke::new(1.0, BORDER()))
                     .corner_radius(14)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         ui.set_width(w - 26.0);
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(*label).small().color(MUTED));
+                            ui.label(RichText::new(*label).small().color(MUTED()));
                             ui.add(egui::Label::new(RichText::new(value).size(18.0).strong().color(*color)).truncate());
                         });
                     });
@@ -131,8 +167,8 @@ pub fn kv_card(ui: &mut egui::Ui, id: &str, rows: &[(&str, String, Option<Color3
     card(ui, |ui| {
         egui::Grid::new(id).num_columns(2).striped(true).spacing([24.0, 6.0]).show(ui, |ui| {
             for (k, v, c) in rows {
-                ui.label(RichText::new(*k).color(MUTED));
-                ui.label(RichText::new(v).strong().color(c.unwrap_or(TEXT)));
+                ui.label(RichText::new(*k).color(MUTED()));
+                ui.label(RichText::new(v).strong().color(c.unwrap_or(TEXT())));
                 ui.end_row();
             }
         });
@@ -142,19 +178,19 @@ pub fn kv_card(ui: &mut egui::Ui, id: &str, rows: &[(&str, String, Option<Color3
 
 pub fn sev_color(s: Severity) -> Color32 {
     match s {
-        Severity::Critical => RED,
-        Severity::Warning => ORANGE,
-        Severity::Notice => YELLOW,
-        Severity::Ok => GREEN,
-        Severity::Info => MUTED,
+        Severity::Critical => RED(),
+        Severity::Warning => ORANGE(),
+        Severity::Notice => YELLOW(),
+        Severity::Ok => GREEN(),
+        Severity::Info => MUTED(),
     }
 }
 
 pub fn finding_card(ui: &mut egui::Ui, sev: Severity, title: &str, detail: &str, penalty: f32) {
     let c = sev_color(sev);
     let r = egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(CARD())
+        .stroke(Stroke::new(1.0, BORDER()))
         .corner_radius(14)
         .inner_margin(egui::Margin { left: 18, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
@@ -163,11 +199,11 @@ pub fn finding_card(ui: &mut egui::Ui, sev: Severity, title: &str, detail: &str,
                 pill(ui, sev.label(), c);
                 ui.label(RichText::new(title).strong());
                 if penalty > 0.0 {
-                    ui.label(RichText::new(format!("-{penalty:.0} pts")).small().color(MUTED));
+                    ui.label(RichText::new(format!("-{penalty:.0} pts")).small().color(MUTED()));
                 }
             });
             ui.add_space(2.0);
-            ui.label(RichText::new(detail).color(MUTED));
+            ui.label(RichText::new(detail).color(MUTED()));
         })
         .response;
     let stripe = Rect::from_min_max(r.rect.left_top() + vec2(0.0, 10.0), pos2(r.rect.left() + 4.0, r.rect.bottom() - 10.0));
@@ -179,11 +215,11 @@ pub fn empty_state(ui: &mut egui::Ui, icon: Icon, title: &str, text: &str) {
         ui.vertical_centered(|ui| {
             ui.add_space(12.0);
             let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 28.0, ACCENT.gamma_multiply(0.12));
-            paint_icon(ui.painter(), r.shrink(14.0), icon, ACCENT);
+            ui.painter().circle_filled(r.center(), 28.0, ACCENT().gamma_multiply(0.12));
+            paint_icon(ui.painter(), r.shrink(14.0), icon, ACCENT());
             ui.add_space(8.0);
             ui.label(RichText::new(title).size(17.0).strong());
-            ui.label(RichText::new(text).color(MUTED));
+            ui.label(RichText::new(text).color(MUTED()));
             ui.add_space(12.0);
         });
     });
@@ -191,9 +227,9 @@ pub fn empty_state(ui: &mut egui::Ui, icon: Icon, title: &str, text: &str) {
 
 pub fn brand(ui: &mut egui::Ui) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::hover());
-    ui.painter().rect_filled(r, 9, ACCENT);
-    paint_icon(ui.painter(), r.shrink(6.0), Icon::Disk, BG);
-    ui.label(RichText::new("DiscoLab").size(19.0).strong().color(TEXT));
+    ui.painter().rect_filled(r, 9, ACCENT());
+    paint_icon(ui.painter(), r.shrink(6.0), Icon::Disk, BG());
+    ui.label(RichText::new("DiscoLab").size(19.0).strong().color(TEXT()));
 }
 
 fn button(ui: &mut egui::Ui, text: &str, fill: Color32, fg: Color32, enabled: bool, full: bool) -> egui::Response {
@@ -207,41 +243,41 @@ fn button(ui: &mut egui::Ui, text: &str, fill: Color32, fg: Color32, enabled: bo
 
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let full = ui.available_width() < 520.0;
-    button(ui, text, ACCENT, BG, enabled, full)
+    button(ui, text, ACCENT(), BG(), enabled, full)
 }
 
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let full = ui.available_width() < 520.0;
-    button(ui, text, RED, TEXT, true, full)
+    button(ui, text, RED(), TEXT(), true, full)
 }
 
 pub fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
-    button(ui, text, CARD_HI, TEXT, enabled, false)
+    button(ui, text, CARD_HI(), TEXT(), enabled, false)
 }
 
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str, busy: bool) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(38.0), egui::Sense::click());
-    let fill = if resp.hovered() { CARD_HI } else { CARD };
+    let fill = if resp.hovered() { CARD_HI() } else { CARD() };
     ui.painter().rect_filled(r, 10, fill);
     if busy {
-        egui::Spinner::new().size(18.0).color(ACCENT).paint_at(ui, r.shrink(10.0));
+        egui::Spinner::new().size(18.0).color(ACCENT()).paint_at(ui, r.shrink(10.0));
     } else {
-        paint_icon(ui.painter(), r.shrink(10.0), icon, TEXT);
+        paint_icon(ui.painter(), r.shrink(10.0), icon, TEXT());
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     resp.on_hover_text(tip)
 }
 
 pub fn tab_chip(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.5), TEXT);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.5), TEXT());
     let size = vec2(galley.size().x + 52.0, 38.0);
     let (r, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let (fill, fg) = if selected {
-        (ACCENT.gamma_multiply(0.18), ACCENT)
+        (ACCENT().gamma_multiply(0.18), ACCENT())
     } else if resp.hovered() {
-        (CARD, TEXT)
+        (CARD(), TEXT())
     } else {
-        (Color32::TRANSPARENT, MUTED)
+        (Color32::TRANSPARENT, MUTED())
     };
     ui.painter().rect_filled(r, 12, fill);
     paint_icon(ui.painter(), Rect::from_center_size(pos2(r.left() + 22.0, r.center().y), Vec2::splat(16.0)), icon, fg);
@@ -252,10 +288,10 @@ pub fn tab_chip(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> e
 
 pub fn nav_item(ui: &mut egui::Ui, w: f32, icon: Icon, label: &str, selected: bool) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(w, 58.0), egui::Sense::click());
-    let fg = if selected { ACCENT } else { MUTED };
+    let fg = if selected { ACCENT() } else { MUTED() };
     let ic = Rect::from_center_size(pos2(r.center().x, r.top() + 20.0), vec2(48.0, 28.0));
     if selected {
-        ui.painter().rect_filled(ic, 14, ACCENT.gamma_multiply(0.18));
+        ui.painter().rect_filled(ic, 14, ACCENT().gamma_multiply(0.18));
     }
     paint_icon(ui.painter(), Rect::from_center_size(ic.center(), Vec2::splat(18.0)), icon, fg);
     ui.painter().text(pos2(r.center().x, r.top() + 46.0), egui::Align2::CENTER_CENTER, label, FontId::proportional(11.5), fg);
@@ -265,14 +301,14 @@ pub fn nav_item(ui: &mut egui::Ui, w: f32, icon: Icon, label: &str, selected: bo
 
 pub fn bucket_color(b: u8) -> Color32 {
     match b {
-        0 => Color32::from_rgb(70, 80, 98),
-        1 => Color32::from_rgb(105, 116, 138),
-        2 => Color32::from_rgb(150, 160, 180),
-        3 => GREEN,
-        4 => ORANGE,
-        5 => RED,
+        0 => if is_dark() { Color32::from_rgb(70, 80, 98) } else { Color32::from_rgb(160, 170, 188) },
+        1 => if is_dark() { Color32::from_rgb(105, 116, 138) } else { Color32::from_rgb(120, 130, 150) },
+        2 => if is_dark() { Color32::from_rgb(150, 160, 180) } else { Color32::from_rgb(84, 94, 114) },
+        3 => GREEN(),
+        4 => ORANGE(),
+        5 => RED(),
         6 => Color32::from_rgb(168, 85, 247),
-        _ => Color32::from_rgb(32, 37, 48),
+        _ => if is_dark() { Color32::from_rgb(32, 37, 48) } else { Color32::from_rgb(226, 231, 240) },
     }
 }
 
@@ -290,6 +326,8 @@ pub enum Icon {
     Usb,
     Chip,
     Refresh,
+    Sun,
+    Moon,
 }
 
 /// Arco de `t0` a `t1` (frações de volta, 0 = topo, sentido horário).
@@ -389,6 +427,20 @@ pub fn paint_icon(p: &egui::Painter, r: Rect, icon: Icon, c: Color32) {
                 p.line_segment([at(0.0, t), at(0.2, t)], thin);
                 p.line_segment([at(0.8, t), at(1.0, t)], thin);
             }
+        }
+        Icon::Sun => {
+            let ctr = r.center();
+            p.circle_filled(ctr, w * 0.22, c);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let d = vec2(a.cos(), a.sin());
+                p.line_segment([ctr + d * w * 0.34, ctr + d * w * 0.48], Stroke::new(s.width * 0.8, c));
+            }
+        }
+        Icon::Moon => {
+            let ctr = r.center();
+            p.circle_filled(ctr, w * 0.42, c);
+            p.circle_filled(ctr + vec2(w * 0.2, -w * 0.16), w * 0.36, BG_FOR_MOON());
         }
         Icon::Refresh => {
             let ctr = r.center();

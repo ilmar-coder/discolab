@@ -15,6 +15,9 @@ USO:
   discolab-cli bench <pasta> [--size MiB] [--secs N] [--sustained GiB] [--cached]
   discolab-cli scan <disco> [--start %] [--end %] [--block KiB]   (somente leitura)
   discolab-cli selftest <disco> short|long|abort
+  discolab-cli report <disco> [--client NOME] [--tech NOME] [--out arquivo.html]
+  discolab-cli update                        Verifica se há versão nova
+  discolab-cli capacity <pasta> [--gib N] [--keep] [--verify]   (teste de capacidade real)
 
 <disco> = nome mostrado em `list` (ex.: sda, nvme0n1, disk0, PhysicalDrive0)";
 
@@ -162,6 +165,50 @@ fn main() {
                 Err(e) => eprintln!("ERRO: {e}"),
             }
         }
+        Some("report") if args.len() > 1 => {
+            let d = find(&args[1]);
+            let s = read_smart(&d);
+            let a = assess(&d, &s, None);
+            let info = discolab_core::html_report::ReportInfo {
+                client: arg::<String>(&args, "--client").unwrap_or_default(),
+                technician: arg::<String>(&args, "--tech").unwrap_or_default(),
+                notes: String::new(),
+                tbw: s.host_written_bytes.and_then(|_| discolab_core::endurance::rated_tbw(s.model.as_deref().unwrap_or(&d.model), s.capacity.unwrap_or(d.size_bytes))),
+                date: report::now_string(),
+            };
+            let html = discolab_core::html_report::html_report(&d, Some(&s), Some(&a), None, None, None, &info);
+            match arg::<String>(&args, "--out") {
+                Some(out) => {
+                    std::fs::write(&out, html).expect("gravar relatório");
+                    println!("Relatório salvo em {out}");
+                }
+                None => match report::save_and_open_html(&d, &html) {
+                    Ok(p) => println!("Relatório salvo em {p}"),
+                    Err(e) => eprintln!("ERRO: {e}"),
+                },
+            }
+        }
+        Some("capacity") if args.len() > 1 => {
+            use discolab_core::capacity::{CapConfig, CapEvent, run_capacity};
+            let mut cfg = CapConfig::new(std::path::Path::new(&args[1]).join("capacidade"));
+            cfg.bytes = arg::<u64>(&args, "--gib").map(|g| g << 30);
+            cfg.keep_files = args.iter().any(|a| a == "--keep");
+            cfg.verify_only = args.iter().any(|a| a == "--verify");
+            run_capacity(&cfg, &cancel, &mut |e| match e {
+                CapEvent::Phase(p) => println!("» {p}"),
+                CapEvent::Progress { done, total, mbps, .. } => {
+                    print!("\r  {} de {}  {mbps:6.0} MB/s   ", human_bytes(done), human_bytes(total));
+                    let _ = std::io::stdout().flush();
+                }
+                CapEvent::Failed(f) => eprintln!("ERRO: {f}"),
+                CapEvent::Done(r) => println!("\n{}", r.verdict()),
+            });
+        }
+        Some("update") => match discolab_core::update::check() {
+            Ok(Some(r)) => println!("Nova versão {} disponível: {}", r.version, r.page),
+            Ok(None) => println!("Você já tem a versão mais recente ({}).", discolab_core::update::current_version()),
+            Err(e) => eprintln!("Não foi possível verificar: {e}"),
+        },
         _ => println!("{HELP}"),
     }
 }

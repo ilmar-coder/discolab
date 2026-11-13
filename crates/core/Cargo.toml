@@ -1,14 +1,17 @@
 [package]
 name = "discolab-core"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 libc = "0.2.191"
 plist = "1.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 sysinfo = "0.40.1"
+ureq = "3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
